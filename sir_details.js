@@ -16,7 +16,7 @@ if(!ROOT) return;
 /* "demo"        - use the built-in synthetic rows (what ships here)
    "caspio-html" - read rows Caspio rendered into hidden per-record blocks
    "caspio-rest" - fetch rows from the Caspio REST API                     */
-var DATA_MODE = "demo";
+var DATA_MODE = "caspio-html";
 
 /* Only used when DATA_MODE === "caspio-rest". */
 var REST = {
