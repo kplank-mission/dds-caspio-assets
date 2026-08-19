@@ -37,6 +37,19 @@
 #sir-details header.app .through .lbl{font-size:10px;color:#9fb0c0;text-transform:uppercase;letter-spacing:.06em}
 #sir-details header.app .through .val{font-size:14px;font-weight:700}
 
+/* scope bar — the server-side cut, distinct from the sidebar filters */
+#sir-details .scope{background:#1f2937;border-bottom:1px solid #2f3b4a;padding:10px 20px;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+#sir-details .scope .sctl{display:flex;flex-direction:column;gap:3px}
+#sir-details .scope label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#9fb0c0;font-weight:600}
+#sir-details .scope select,#sir-details .scope input{padding:6px 8px;border:1px solid #3a4757;border-radius:7px;font:inherit;background:#111820;color:#fff;min-width:150px}
+#sir-details .scope select:focus,#sir-details .scope input:focus{outline:2px solid #4fd1c5;border-color:#4fd1c5}
+#sir-details .scope #sc_load{padding:7px 14px;border:1px solid var(--org);border-radius:7px;background:var(--org);color:#fff;font:inherit;font-weight:700;cursor:pointer}
+#sir-details .scope #sc_load:hover{background:#0d635c}
+#sir-details .scope #sc_load:focus-visible{outline:2px solid #4fd1c5;outline-offset:2px}
+#sir-details .scope .snow{margin-left:auto;color:#c8d4e0;font-size:11px;font-weight:600;letter-spacing:.02em;text-align:right}
+#sir-details .scope .smsg{flex-basis:100%;color:#ffb4a2;font-size:11px;font-weight:600}
+#sir-details .scope .smsg:empty{display:none}
+
 /* layout */
 #sir-details .page{padding:16px 20px 28px}
 #sir-details .layout{display:grid;grid-template-columns:290px 1fr;gap:16px;align-items:start}

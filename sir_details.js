@@ -45,6 +45,25 @@ var MULTI_DELIM = {
 var TRUTHY = ["X","x","Y","YES","Yes","yes","TRUE","True","true","1"];
 
 /* =====================================================================
+   SCOPE — the server-side cut Caspio applies BEFORE the page loads.
+   The scope bar writes these onto the page URL and reloads; the DataPage's
+   filtering criteria read them as external parameters. Only one scope's
+   worth of rows is ever in the browser, so the sidebar filters, the summary
+   tiles and every dropdown describe the CURRENT SCOPE, not the whole table.
+   That is why the scope line under the header is always visible.
+
+   `rcs` has to be listed here — it cannot be derived from the data, because
+   a single-RC scope only ever contains that one RC. Replace this list with
+   your real Regional Center codes exactly as they appear in the RC column.
+   ===================================================================== */
+var SCOPE = {
+  param : {rc:"RC", from:"From", to:"To"},   // URL / Caspio parameter names
+  rcs   : ["ACRC", "CVRC", "ELARC","FDLRC", "FNRC", "GGRC", "HRC", "IRC", "KRC", "NBRC", "NLACRC","RCEB", "RCOC", "RCRC", "SARC", "SCLARC", "SDRC", "SGPRC", "TCRC", "VMRC", "WRC"],
+  months: 12,          // default window when the URL carries no dates
+  allRc : true         // false = force a single RC, no "All" option
+};
+
+/* =====================================================================
    SCHEMA — the 29 columns of caspio_data_sample.xlsx.
    `t` is the display label, `mono` right-aligns digits, `date` parses as
    a date, `flag` renders as an APS/CPS-style badge.
@@ -495,6 +514,119 @@ function start(rawRows){
   initControls();
   applyFilters();
   drawDetail(null);
+  drawScopeLine(ALL.length);
+}
+
+/* =====================================================================
+   ============================== SCOPE ================================
+   The bar under the header does not filter anything itself — it rewrites
+   the page URL and reloads, so Caspio re-runs its query and sends back a
+   different slice. Dates travel as MM/DD/YYYY, which is what a Caspio
+   Date/Time criterion expects.
+   ===================================================================== */
+
+function pad2(n){ return (n<10?"0":"")+n; }
+function dISO(d){ return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
+
+function isoToUs(s){
+  var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s||"").trim());
+  return m ? m[2]+"/"+m[3]+"/"+m[1] : "";
+}
+function usToIso(s){
+  var v=String(s||"").trim();
+  var m=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);
+  if(m) return m[3]+"-"+pad2(+m[1])+"-"+pad2(+m[2]);
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "";
+}
+
+function urlParams(){
+  var out={}, q=location.search.replace(/^\?/,"");
+  if(!q) return out;
+  q.split("&").forEach(function(pair){
+    if(!pair) return;
+    var i=pair.indexOf("=");
+    var k=i<0?pair:pair.slice(0,i), v=i<0?"":pair.slice(i+1);
+    try{ out[decodeURIComponent(k)]=decodeURIComponent(v.replace(/\+/g," ")); }catch(e){}
+  });
+  return out;
+}
+
+/* What the URL asks for, with the default window filled in. */
+function currentScope(){
+  var p=urlParams();
+  var from=usToIso(p[SCOPE.param.from]), to=usToIso(p[SCOPE.param.to]);
+  if(!from || !to){
+    var hi=new Date(), lo=new Date();
+    lo.setMonth(lo.getMonth()-SCOPE.months);
+    from=from||dISO(lo); to=to||dISO(hi);
+  }
+  return {rc:(p[SCOPE.param.rc]||"").trim(), from:from, to:to};
+}
+
+/* Keep any unrelated parameters already on the URL. An empty RC is dropped
+   rather than sent blank, so Caspio's criterion matches every RC. */
+function scopeUrl(sc){
+  var p=urlParams();
+  p[SCOPE.param.rc]  = sc.rc||"";
+  p[SCOPE.param.from]= isoToUs(sc.from);
+  p[SCOPE.param.to]  = isoToUs(sc.to);
+  p.sdscope="1";
+  var parts=[];
+  for(var k in p){
+    if(!Object.prototype.hasOwnProperty.call(p,k) || p[k]==="") continue;
+    parts.push(encodeURIComponent(k)+"="+encodeURIComponent(p[k]));
+  }
+  return location.pathname+(parts.length?"?"+parts.join("&"):"")+location.hash;
+}
+
+function drawScopeLine(n){
+  var el=ROOT.querySelector("#sdScopeNow");
+  if(!el) return;
+  var sc=currentScope();
+  var bits=[sc.rc||"All Regional Centers", isoToUs(sc.from)+" – "+isoToUs(sc.to)];
+  bits.push(n==null ? "loading…"
+                    : n.toLocaleString()+" record"+(n===1?"":"s")+" loaded");
+  el.textContent="Showing  "+bits.join("   ·   ");
+}
+
+/* Returns true if it navigated away, in which case boot() should not load. */
+function initScope(){
+  if(!ROOT.querySelector("#sdScope")) return false;
+  var sc=currentScope();
+
+  /* A bare URL means Caspio got no parameters and would return the whole
+     table. Redirect once to an explicit window instead. The sdscope
+     sentinel stops a reload loop if the deployment strips the query. */
+  if(!urlParams().sdscope && DATA_MODE!=="demo"){
+    location.replace(scopeUrl(sc));
+    return true;
+  }
+
+  var sel=ROOT.querySelector("#sc_rc");
+  var opts=[SCOPE.allRc
+    ? '<option value="">All Regional Centers</option>'
+    : '<option value="">Choose a Regional Center…</option>'];
+  SCOPE.rcs.forEach(function(rc){
+    opts.push('<option value="'+rc+'"'+(rc===sc.rc?" selected":"")+">"+rc+"</option>");
+  });
+  sel.innerHTML=opts.join("");
+
+  ROOT.querySelector("#sc_from").value=sc.from;
+  ROOT.querySelector("#sc_to").value=sc.to;
+
+  ROOT.querySelector("#sc_load").addEventListener("click",function(){
+    var from=ROOT.querySelector("#sc_from").value;
+    var to  =ROOT.querySelector("#sc_to").value;
+    var msg =ROOT.querySelector("#sdScopeMsg");
+    if(!from||!to){ msg.textContent="Pick both a From and a To date."; return; }
+    if(from>to){ msg.textContent="The From date is after the To date."; return; }
+    if(!SCOPE.allRc && !sel.value){ msg.textContent="Choose a Regional Center."; return; }
+    msg.textContent="";
+    location.assign(scopeUrl({rc:sel.value,from:from,to:to}));
+  });
+
+  drawScopeLine(null);
+  return false;
 }
 
 /* =====================================================================
@@ -558,6 +690,7 @@ function loadRest(){
 
 function boot(){
   try{
+    if(initScope()) return;          // navigated to the default scope
     if(DATA_MODE==="caspio-html") loadEmbedded();
     else if(DATA_MODE==="caspio-rest") loadRest();
     else start(buildDemo());
