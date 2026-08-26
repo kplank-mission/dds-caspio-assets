@@ -57,9 +57,8 @@ var TRUTHY = ["X","x","Y","YES","Yes","yes","TRUE","True","true","1"];
    your real Regional Center codes exactly as they appear in the RC column.
    ===================================================================== */
 var SCOPE = {
-  param : {rc:"RC", from:"From", to:"To"},   // URL / Caspio parameter names
+  param : {rc:"RC"},   // URL / Caspio parameter name
   rcs   : ["ACRC", "CVRC", "ELARC","FDLRC", "FNRC", "GGRC", "HRC", "IRC", "KRC", "NBRC", "NLACRC","RCEB", "RCOC", "RCRC", "SARC", "SCLARC", "SDRC", "SGPRC", "TCRC", "VMRC", "WRC"],
-  months: 12,          // default window when the URL carries no dates
   allRc : true         // false = force a single RC, no "All" option
 };
 
@@ -521,23 +520,9 @@ function start(rawRows){
    ============================== SCOPE ================================
    The bar under the header does not filter anything itself — it rewrites
    the page URL and reloads, so Caspio re-runs its query and sends back a
-   different slice. Dates travel as MM/DD/YYYY, which is what a Caspio
-   Date/Time criterion expects.
+   different slice. The only server-side parameter is RC; every date
+   narrowing happens in the sidebar, on the rows Caspio already returned.
    ===================================================================== */
-
-function pad2(n){ return (n<10?"0":"")+n; }
-function dISO(d){ return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
-
-function isoToUs(s){
-  var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s||"").trim());
-  return m ? m[2]+"/"+m[3]+"/"+m[1] : "";
-}
-function usToIso(s){
-  var v=String(s||"").trim();
-  var m=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);
-  if(m) return m[3]+"-"+pad2(+m[1])+"-"+pad2(+m[2]);
-  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "";
-}
 
 function urlParams(){
   var out={}, q=location.search.replace(/^\?/,"");
@@ -551,25 +536,16 @@ function urlParams(){
   return out;
 }
 
-/* What the URL asks for, with the default window filled in. */
+/* What the URL asks for. */
 function currentScope(){
-  var p=urlParams();
-  var from=usToIso(p[SCOPE.param.from]), to=usToIso(p[SCOPE.param.to]);
-  if(!from || !to){
-    var hi=new Date(), lo=new Date();
-    lo.setMonth(lo.getMonth()-SCOPE.months);
-    from=from||dISO(lo); to=to||dISO(hi);
-  }
-  return {rc:(p[SCOPE.param.rc]||"").trim(), from:from, to:to};
+  return {rc:(urlParams()[SCOPE.param.rc]||"").trim()};
 }
 
 /* Keep any unrelated parameters already on the URL. An empty RC is dropped
    rather than sent blank, so Caspio's criterion matches every RC. */
 function scopeUrl(sc){
   var p=urlParams();
-  p[SCOPE.param.rc]  = sc.rc||"";
-  p[SCOPE.param.from]= isoToUs(sc.from);
-  p[SCOPE.param.to]  = isoToUs(sc.to);
+  p[SCOPE.param.rc] = sc.rc||"";
   p.sdscope="1";
   var parts=[];
   for(var k in p){
@@ -583,25 +559,17 @@ function drawScopeLine(n){
   var el=ROOT.querySelector("#sdScopeNow");
   if(!el) return;
   var sc=currentScope();
-  var bits=[sc.rc||"All Regional Centers", isoToUs(sc.from)+" – "+isoToUs(sc.to)];
+  var bits=[sc.rc||"All Regional Centers"];
   bits.push(n==null ? "loading…"
                     : n.toLocaleString()+" record"+(n===1?"":"s")+" loaded");
   el.textContent="Showing  "+bits.join("   ·   ");
 }
 
-/* Returns true if it navigated away, in which case boot() should not load. */
+/* Wires the Regional Center picker. Returns false — it never navigates on
+   its own; only the "Load records" button does. */
 function initScope(){
   if(!ROOT.querySelector("#sdScope")) return false;
   var sc=currentScope();
-
-  /* A bare URL means Caspio got no parameters and would return the whole
-     table. Redirect once to an explicit window instead. The sdscope
-     sentinel stops a reload loop if the deployment strips the query. */
-  if(!urlParams().sdscope && DATA_MODE!=="demo"){
-    location.replace(scopeUrl(sc));
-    return true;
-  }
-
   var sel=ROOT.querySelector("#sc_rc");
   var opts=[SCOPE.allRc
     ? '<option value="">All Regional Centers</option>'
@@ -611,18 +579,11 @@ function initScope(){
   });
   sel.innerHTML=opts.join("");
 
-  ROOT.querySelector("#sc_from").value=sc.from;
-  ROOT.querySelector("#sc_to").value=sc.to;
-
   ROOT.querySelector("#sc_load").addEventListener("click",function(){
-    var from=ROOT.querySelector("#sc_from").value;
-    var to  =ROOT.querySelector("#sc_to").value;
-    var msg =ROOT.querySelector("#sdScopeMsg");
-    if(!from||!to){ msg.textContent="Pick both a From and a To date."; return; }
-    if(from>to){ msg.textContent="The From date is after the To date."; return; }
+    var msg=ROOT.querySelector("#sdScopeMsg");
     if(!SCOPE.allRc && !sel.value){ msg.textContent="Choose a Regional Center."; return; }
     msg.textContent="";
-    location.assign(scopeUrl({rc:sel.value,from:from,to:to}));
+    location.assign(scopeUrl({rc:sel.value}));
   });
 
   drawScopeLine(null);
@@ -656,8 +617,17 @@ function loadEmbedded(){
   var tries=0;
   var timer=setInterval(function(){
     var rows=readEmbeddedRows();
-    if(rows.length){ clearInterval(timer); start(rows); }
-    else if(++tries>60){ clearInterval(timer); start([]); }
+    if(rows.length){
+      clearInterval(timer);
+      if(window.console) console.log("SIR details: read "+rows.length+" record block(s).");
+      start(rows);
+    }else if(++tries>60){
+      clearInterval(timer);
+      if(window.console) console.warn("SIR details: no [data-sir-rec] blocks after 6s — either the DataPage returned no rows for these parameters, or the per-record HTML Block is missing from Configure Results Page Fields.");
+      var em=ROOT.querySelector("#sdEmpty");
+      if(em) em.innerHTML="<strong>No records arrived from Caspio</strong>Either the query returned nothing for this scope, or the per-record HTML Block is not on the results page. See the browser console.";
+      start([]);
+    }
   },100);
 }
 
