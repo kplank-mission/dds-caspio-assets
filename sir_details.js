@@ -5,8 +5,14 @@
 (function(){
 "use strict";
 
-var ROOT = document.getElementById("sir-details");
-if(!ROOT) return;
+/* The header may load this file twice (the <script> tag AND the loader
+   shim, see sir_details_header.html). Run once. */
+if(window.__sirDetailsBooted) return;
+window.__sirDetailsBooted = true;
+
+/* Assigned by whenRoot() at the bottom — Caspio can inject the DataPage
+   HTML after this file has already run. */
+var ROOT = null;
 
 /* =====================================================================
    ============================= CONFIG ================================
@@ -17,6 +23,35 @@ if(!ROOT) return;
    "caspio-html" - read rows Caspio rendered into hidden per-record blocks
    "caspio-rest" - fetch rows from the Caspio REST API                     */
 var DATA_MODE = "caspio-html";
+
+/* How long to wait for Caspio's per-record blocks to appear before giving
+   up. A no-parameter load of the whole table is far slower than a
+   single-RC slice, so this is generous on purpose. */
+var WAIT_MS = 180000;
+
+/* Wall-clock timing, so an unparameterised load can be measured.
+   Reported to the console and, if the header has a #sdPerf element,
+   printed on the page. */
+function nowMs(){
+  return (window.performance && window.performance.now) ? window.performance.now() : +new Date();
+}
+var T0 = nowMs(), PERF = {};
+
+function reportPerf(){
+  var wait  = Math.round(PERF.blocks - T0);
+  var parse = Math.round(PERF.done   - PERF.blocks);
+  var total = Math.round(PERF.done   - T0);
+  var line  = PERF.rows.toLocaleString()+" records  ·  waited on Caspio "+(wait/1000).toFixed(1)+
+              "s  ·  render "+(parse/1000).toFixed(1)+"s  ·  script total "+(total/1000).toFixed(1)+"s";
+  /* performance.now() counts from navigation start, so this covers Caspio's
+     server time and the HTML download as well — the number a user feels. */
+  if(window.performance && window.performance.now){
+    line += "  ·  since page open "+(PERF.done/1000).toFixed(1)+"s";
+  }
+  if(window.console) console.log("SIR details timing: "+line);
+  var el = ROOT && ROOT.querySelector("#sdPerf");
+  if(el) el.textContent = line;
+}
 
 /* Only used when DATA_MODE === "caspio-rest". */
 var REST = {
@@ -614,21 +649,25 @@ function readEmbeddedRows(){
 
 /* Caspio results may be injected asynchronously, so poll briefly. */
 function loadEmbedded(){
-  var tries=0;
-  var timer=setInterval(function(){
+  var tries=0, limit=Math.ceil(WAIT_MS/100), timer=null;
+  function tick(){
     var rows=readEmbeddedRows();
     if(rows.length){
       clearInterval(timer);
       if(window.console) console.log("SIR details: read "+rows.length+" record block(s).");
+      PERF.blocks=nowMs(); PERF.rows=rows.length;
       start(rows);
-    }else if(++tries>60){
+      PERF.done=nowMs(); reportPerf();
+    }else if(++tries>limit){
       clearInterval(timer);
-      if(window.console) console.warn("SIR details: no [data-sir-rec] blocks after 6s — either the DataPage returned no rows for these parameters, or the per-record HTML Block is missing from Configure Results Page Fields.");
+      if(window.console) console.warn("SIR details: no [data-sir-rec] blocks after "+Math.round(WAIT_MS/1000)+"s — either the DataPage returned no rows for these parameters, or the per-record HTML Block is missing from Configure Results Page Fields.");
       var em=ROOT.querySelector("#sdEmpty");
       if(em) em.innerHTML="<strong>No records arrived from Caspio</strong>Either the query returned nothing for this scope, or the per-record HTML Block is not on the results page. See the browser console.";
       start([]);
     }
-  },100);
+  }
+  tick();
+  if(!PERF.done) timer=setInterval(tick,100);
 }
 
 /* MODE "caspio-rest" — follows @nextpage until done or maxRows. */
@@ -668,6 +707,26 @@ function boot(){
     if(window.console) console.error("SIR details init failed:",err);
   }
 }
-boot();
+/* =====================================================================
+   Caspio does not guarantee that #sir-details is in the DOM when this
+   file executes: the standard embed writes the DataPage in place, but the
+   Preview window and some deployments inject it afterwards. Wait for the
+   container rather than silently doing nothing.
+   ===================================================================== */
+function whenRoot(){
+  ROOT = document.getElementById("sir-details");
+  if(ROOT){ boot(); return; }
+  var tries = 0;
+  var timer = setInterval(function(){
+    ROOT = document.getElementById("sir-details");
+    if(ROOT){ clearInterval(timer); boot(); }
+    else if(++tries > 100){
+      clearInterval(timer);
+      if(window.console) console.warn("SIR details: #sir-details never appeared after 10s — the header HTML is not on this DataPage, or something stripped it.");
+    }
+  },100);
+}
+whenRoot();
 
 })();
+OLD

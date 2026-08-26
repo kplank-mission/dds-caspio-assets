@@ -146,3 +146,6 @@
 @media (prefers-reduced-motion:reduce){
   #sir-details *{transition:none!important;animation:none!important}
 }
+
+/* baseline (no-parameter) build — the load stopwatch replaces the scope bar */
+#sir-details .scope .perf{color:#c8d4e0;font-size:12px;font-weight:600;letter-spacing:.02em;font-variant-numeric:tabular-nums}
