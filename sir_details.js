@@ -79,6 +79,13 @@ var MULTI_DELIM = {
 /* Values that mean "yes" in the APS/CPS/Law-enforcement columns. */
 var TRUTHY = ["X","x","Y","YES","Yes","yes","TRUE","True","true","1"];
 
+/* Caspio caps how many records a DataPage returns. When the row count comes
+   back at exactly the cap, the result was truncated and every count, tile
+   and cross-filter total on the page is an undercount — so say so loudly
+   rather than letting a partial load pass for a complete one.
+   Change this if the DataPage's "Maximum number of records" is changed. */
+var LOAD_CAP = 999;
+
 /* =====================================================================
    SCOPE — the server-side cut Caspio applies BEFORE the page loads.
    The scope bar writes these onto the page URL and reloads; the DataPage's
@@ -94,7 +101,13 @@ var TRUTHY = ["X","x","Y","YES","Yes","yes","TRUE","True","true","1"];
 var SCOPE = {
   param : {rc:"RC", from:"From", to:"To"},  // URL / Caspio parameter names
   rcs   : ["ACRC", "CVRC", "ELARC","FDLRC", "FNRC", "GGRC", "HRC", "IRC", "KRC", "NBRC", "NLACRC","RCEB", "RCOC", "RCRC", "SARC", "SCLARC", "SDRC", "SGPRC", "TCRC", "VMRC", "WRC"],
-  allRc : true         // false = force a single RC, no "All" option
+  allRc : true,        // false = force a single RC, no "All" option
+
+  /* Domain of the scope date slider. It cannot be read from the data —
+     the slider has to offer dates that are NOT in the current slice, since
+     its whole job is to fetch a different one. Set `max` to "" for today. */
+  minDate: "2019-01-01",
+  maxDate: ""
 };
 
 /* =====================================================================
@@ -272,9 +285,22 @@ function buildDemo(){
 /* =====================================================================
    =========================== ENGINE ==================================
    ===================================================================== */
-var ALL=[], VIEW=[], selected=null;
+/* ALL   - every row Caspio delivered for the current scope
+   BASE  - ALL after the sidebar filters, but BEFORE the cross-filter panels
+   VIEW  - BASE after the cross-filter panels; what the grid shows
+   Keeping BASE separate is what lets each cross-filter panel be counted
+   against the OTHER panel's selection without counting against its own. */
+var ALL=[], BASE=[], VIEW=[], selected=null;
 var sortCol="IncidentDate", sortDir=-1;
 var page=1, pageSize=100;
+
+/* Cross-filter selections. null = nothing picked in that panel. */
+var xfVendor=null, xfUci=null;
+
+/* Rows rendered per cross-filter panel. An unparameterised load can hold
+   tens of thousands of distinct UCIs; building that many <tr> on every
+   keystroke is what would make the sidebar feel slow. */
+var XF_MAX=200;
 
 var $=function(s){return ROOT.querySelector(s);};
 var $$=function(s){return Array.prototype.slice.call(ROOT.querySelectorAll(s));};
@@ -303,6 +329,88 @@ function fmtDate(v){
   return d?d.toLocaleDateString("en-US",{year:"numeric",month:"short",day:"2-digit",timeZone:"UTC"}):"";
 }
 function isoDate(d){return d.toISOString().slice(0,10);}
+
+/* ---------------------- dual-handle date slider ----------------------
+   Two overlaid <input type=range>, which is the only way to get a
+   two-thumb slider without a library. Positions are whole days from the
+   domain start, so the arrow keys move one day at a time and the value is
+   always a real date rather than a percentage.
+
+   The slider never owns the value: the pair of <input type=date> boxes
+   does. The slider writes into them and reads back out of them, so typing
+   a date and dragging a handle stay in agreement, and everything else on
+   the page keeps reading the boxes exactly as before.
+   --------------------------------------------------------------------- */
+var DAY_MS = 86400000;
+
+function dayIndex(iso, originMs){
+  var d = parseDate(iso);
+  return d ? Math.round((d.getTime()-originMs)/DAY_MS) : null;
+}
+function indexIso(i, originMs){
+  return isoDate(new Date(originMs + i*DAY_MS));
+}
+
+function makeDateSlider(host, opts){
+  if(!host) return null;
+  var originMs = parseDate(opts.min) && parseDate(opts.min).getTime();
+  var lastIdx  = dayIndex(opts.max, originMs);
+  if(originMs==null || lastIdx==null || lastIdx<1){ host.hidden=true; return null; }
+  host.hidden=false;
+
+  host.innerHTML =
+    '<div class="dsl">'+
+      '<div class="dsl-rail"><div class="dsl-fill"></div></div>'+
+      '<input type="range" class="dsl-r dsl-lo" min="0" max="'+lastIdx+'" step="1" aria-label="Range start">'+
+      '<input type="range" class="dsl-r dsl-hi" min="0" max="'+lastIdx+'" step="1" aria-label="Range end">'+
+    '</div>'+
+    '<div class="dsl-out"><span class="dsl-v lo">—</span><span class="dsl-sep">to</span><span class="dsl-v hi">—</span></div>';
+
+  var lo=host.querySelector(".dsl-lo"), hi=host.querySelector(".dsl-hi"),
+      fill=host.querySelector(".dsl-fill"),
+      outLo=host.querySelector(".dsl-v.lo"), outHi=host.querySelector(".dsl-v.hi");
+
+  function paint(){
+    var a=+lo.value, b=+hi.value;
+    fill.style.left  = (a/lastIdx*100)+"%";
+    fill.style.width = ((b-a)/lastIdx*100)+"%";
+    outLo.textContent = isoToUs(indexIso(a,originMs));
+    outHi.textContent = isoToUs(indexIso(b,originMs));
+    /* A whole-domain selection is "no filter", so show it that way rather
+       than as a date range the user never chose. */
+    host.classList.toggle("full", a===0 && b===lastIdx);
+  }
+
+  /* Boxes -> slider. A blank box means "open end", which is the domain edge. */
+  function sync(){
+    var a=dayIndex(opts.fromEl.value,originMs), b=dayIndex(opts.toEl.value,originMs);
+    lo.value = Math.max(0, Math.min(lastIdx, a==null?0:a));
+    hi.value = Math.max(0, Math.min(lastIdx, b==null?lastIdx:b));
+    if(+lo.value > +hi.value){ var t=lo.value; lo.value=hi.value; hi.value=t; }
+    paint();
+  }
+
+  /* Slider -> boxes. Handles are not allowed to cross. */
+  function push(){
+    var a=+lo.value, b=+hi.value;
+    if(a>b){ if(document.activeElement===lo) hi.value=a; else lo.value=b; a=+lo.value; b=+hi.value; }
+    opts.fromEl.value = a===0       ? "" : indexIso(a,originMs);
+    opts.toEl.value   = b===lastIdx ? "" : indexIso(b,originMs);
+    paint();
+  }
+
+  [lo,hi].forEach(function(el){
+    el.addEventListener("input",push);
+    /* Filtering on every pixel of a drag would re-scan every row; commit
+       when the handle is released instead. */
+    el.addEventListener("change",function(){ push(); if(opts.onCommit) opts.onCommit(); });
+  });
+
+  sync();
+  return {sync:sync};
+}
+
+var dslSide=null, dslScope=null;
 
 /* Split a multi-value cell into trimmed tokens. */
 function tokens(row,col){
@@ -344,6 +452,7 @@ function fillSelect(sel){
 }
 
 function applyFilters(){
+  syncClears();
   var picks=[];
   selects().forEach(function(s){ if(s.value) picks.push([s.getAttribute("data-col"),s.value]); });
   var flags=checks().filter(function(c){return c.checked;}).map(function(c){return c.getAttribute("data-col");});
@@ -352,7 +461,7 @@ function applyFilters(){
   var from=$("#sd_from").value?parseDate($("#sd_from").value):null;
   var to  =$("#sd_to").value?parseDate($("#sd_to").value):null;
 
-  VIEW=ALL.filter(function(r){
+  BASE=ALL.filter(function(r){
     for(var i=0;i<picks.length;i++){
       if(tokens(r,picks[i][0]).indexOf(picks[i][1])===-1) return false;
     }
@@ -367,6 +476,23 @@ function applyFilters(){
       if(from && r.__date<from) return false;
       if(to && r.__date>to) return false;
     }
+    return true;
+  });
+
+  /* A cross-filter pick that the sidebar has just filtered away would leave
+     an empty grid and no obvious way back, so drop it. */
+  if(xfVendor!==null && !BASE.some(function(r){return String(r.Vendor||"")===xfVendor;})) xfVendor=null;
+  if(xfUci!==null    && !BASE.some(function(r){return String(r.UCI||"")===xfUci;}))       xfUci=null;
+
+  applyCross();
+}
+
+/* BASE -> VIEW. Called on its own when only a cross-filter panel changed,
+   so the sidebar predicate does not have to run again. */
+function applyCross(){
+  VIEW=BASE.filter(function(r){
+    if(xfVendor!==null && String(r.Vendor||"")!==xfVendor) return false;
+    if(xfUci!==null    && String(r.UCI||"")   !==xfUci)    return false;
     return true;
   });
   sortView();
@@ -386,7 +512,100 @@ function sortView(){
 }
 
 /* ---------------------- rendering ---------------------- */
-function render(){ drawSummary(); drawTable(); }
+function render(){ drawSummary(); drawXf(); drawTable(); }
+
+/* ---------------------- cross-filter panels ----------------------
+   Counts are incidents (rows), not distinct anything: one row is one
+   incident record, which is what "incident count" means in the Power BI
+   report these panels mirror.
+
+   Each panel is counted against the sidebar filters PLUS the other panel's
+   selection, but not its own — the same convention Power BI uses, so a
+   vendor stays visible in its own list after you click it.               */
+
+function countBy(rows,col,labelCol){
+  var map={}, out=[];
+  for(var i=0;i<rows.length;i++){
+    var r=rows[i], k=String(r[col]==null?"":r[col]).trim();
+    if(!k) continue;
+    var e=map[k];
+    if(!e){ e=map[k]={key:k,n:0,label:""}; out.push(e); }
+    e.n++;
+    if(labelCol && !e.label) e.label=String(r[labelCol]||"").trim();
+  }
+  out.sort(function(a,b){
+    return (b.n-a.n) || a.key.localeCompare(b.key,undefined,{numeric:true});
+  });
+  return out;
+}
+
+function drawXfPanel(ids,items,sel){
+  var body=$(ids.body); if(!body) return;
+  var shown=items.slice(0,XF_MAX);
+
+  /* Whatever is selected must stay on screen even if its count pushes it
+     past the cut, otherwise the highlight and the Clear button disagree. */
+  if(sel!==null && !shown.some(function(e){return e.key===sel;})){
+    for(var i=0;i<items.length;i++){ if(items[i].key===sel){ shown=[items[i]].concat(shown.slice(0,XF_MAX-1)); break; } }
+  }
+
+  var html="";
+  shown.forEach(function(e){
+    html+='<tr data-key="'+esc(e.key)+'"'+(e.key===sel?' class="on" aria-selected="true"':"")+
+          ' role="button" tabindex="0">'+
+          '<td class="mono k">'+esc(e.key)+"</td>"+
+          '<td class="lbl">'+esc(e.label||"")+"</td>"+
+          '<td class="n mono">'+nf.format(e.n)+"</td></tr>";
+  });
+  body.innerHTML=html||'<tr class="none"><td colspan="3">Nothing to show</td></tr>';
+
+  var n=$(ids.n);
+  if(n) n.textContent=items.length>shown.length
+    ? nf.format(shown.length)+" of "+nf.format(items.length)
+    : nf.format(items.length);
+
+  var clr=$(ids.clr);
+  if(clr) clr.hidden=(sel===null);
+}
+
+function drawXf(){
+  var forVendor = xfUci===null    ? BASE : BASE.filter(function(r){return String(r.UCI||"")===xfUci;});
+  var forUci    = xfVendor===null ? BASE : BASE.filter(function(r){return String(r.Vendor||"")===xfVendor;});
+  drawXfPanel({body:"#xfVendorBody",n:"#xfVendorN",clr:"#xfVendorClr"},
+              countBy(forVendor,"Vendor","VendorNameinSIR"), xfVendor);
+  drawXfPanel({body:"#xfUciBody",n:"#xfUciN",clr:"#xfUciClr"},
+              countBy(forUci,"UCI",null), xfUci);
+}
+
+/* Clicking the already-selected key clears it, matching the grid rows. */
+function pickXf(which,key){
+  if(which==="vendor") xfVendor=(xfVendor===key?null:key);
+  else                 xfUci   =(xfUci===key   ?null:key);
+  selected=null; drawDetail(null);
+  applyCross();
+}
+
+function initXf(){
+  if(!$("#sdXf")) return;
+  [["vendor","#xfVendorBody","#xfVendorClr"],["uci","#xfUciBody","#xfUciClr"]].forEach(function(p){
+    var which=p[0], body=$(p[1]), clr=$(p[2]);
+    if(body){
+      body.addEventListener("click",function(e){
+        var tr=e.target.closest?e.target.closest("tr[data-key]"):null;
+        if(tr) pickXf(which,tr.getAttribute("data-key"));
+      });
+      body.addEventListener("keydown",function(e){
+        if(e.key!=="Enter" && e.key!==" ") return;
+        var tr=e.target.closest?e.target.closest("tr[data-key]"):null;
+        if(tr){ e.preventDefault(); pickXf(which,tr.getAttribute("data-key")); }
+      });
+    }
+    if(clr) clr.addEventListener("click",function(){
+      if(which==="vendor") xfVendor=null; else xfUci=null;
+      selected=null; drawDetail(null); applyCross();
+    });
+  });
+}
 
 function drawSummary(){
   var uci={},ven={},rc={},minD=null,maxD=null;
@@ -453,7 +672,12 @@ function drawTable(){
       }
       tr.appendChild(td);
     });
-    var open=function(){ selected=r; drawDetail(r); drawTable(); };
+    /* Clicking the open record closes it again. */
+    var open=function(){
+      selected=(selected===r)?null:r;
+      drawDetail(selected);
+      drawTable();
+    };
     tr.addEventListener("click",open);
     tr.addEventListener("keydown",function(e){ if(e.key==="Enter"||e.key===" "){e.preventDefault();open();} });
     body.appendChild(tr);
@@ -508,6 +732,64 @@ function drawDetail(r){
   box.innerHTML=html;
 }
 
+/* ---------------------- per-filter clear buttons ----------------------
+   Built here rather than in the header HTML so the two header variants
+   stay in step and a new .fgroup picks one up for free. A button only
+   appears while its control actually holds a value. */
+
+function clearGroup(g){
+  g.__ctrls.forEach(function(c){
+    if(c.type==="checkbox") c.checked=false; else c.value="";
+  });
+  if(dslSide) dslSide.sync();
+  selected=null; drawDetail(null); applyFilters();
+}
+
+function addClear(g,ctrls,host){
+  if(!ctrls.length) return;
+  var b=document.createElement("button");
+  b.type="button"; b.className="clr"; b.innerHTML="&times;";
+  b.title="Clear this filter";
+  b.setAttribute("aria-label","Clear this filter");
+  b.addEventListener("click",function(e){ e.preventDefault(); clearGroup(g); });
+  g.__ctrls=ctrls; g.__clr=b;
+  (host||g).appendChild(b);
+}
+
+function clearables(){
+  return $$("#sdFilters .fgroup").concat($$("#sdFilters fieldset.flags"));
+}
+
+function initClears(){
+  $$("#sdFilters .fgroup").forEach(function(g){
+    addClear(g,$$_in(g,"select,input"));
+  });
+  var fs=$("#sdFilters fieldset.flags");
+  if(fs) addClear(fs,$$_in(fs,"input[type=checkbox]"),fs.querySelector("legend"));
+  syncClears();
+}
+
+/* The date-range group also contains the slider's two range inputs. They
+   mirror the date boxes rather than holding a value of their own, so they
+   must not count towards "this filter is set". */
+function $$_in(el,sel){
+  return Array.prototype.slice.call(el.querySelectorAll(sel)).filter(function(c){
+    return !c.closest || !c.closest(".dslhost");
+  });
+}
+
+function groupHasValue(g){
+  return g.__ctrls.some(function(c){
+    return c.type==="checkbox" ? c.checked : String(c.value||"")!=="";
+  });
+}
+
+function syncClears(){
+  clearables().forEach(function(g){
+    if(g.__clr) g.__clr.hidden=!groupHasValue(g);
+  });
+}
+
 /* ---------------------- wiring ---------------------- */
 function initControls(){
   selects().forEach(function(s){
@@ -521,7 +803,10 @@ function initControls(){
     $(id).addEventListener("input",function(){ selected=null; drawDetail(null); applyFilters(); });
   });
   ["#sd_from","#sd_to"].forEach(function(id){
-    $(id).addEventListener("change",function(){ selected=null; drawDetail(null); applyFilters(); });
+    $(id).addEventListener("change",function(){
+      if(dslSide) dslSide.sync();
+      selected=null; drawDetail(null); applyFilters();
+    });
   });
   $("#sd_pagesize").addEventListener("change",function(){ pageSize=+this.value||100; page=1; drawTable(); });
   $("#sd_prev").addEventListener("click",function(){ if(page>1){page--;drawTable();} });
@@ -531,8 +816,13 @@ function initControls(){
     checks().forEach(function(c){c.checked=false;});
     $("#sd_uci").value=""; $("#sd_vendor").value="";
     $("#sd_from").value=""; $("#sd_to").value="";
+    xfVendor=null; xfUci=null;
+    if(dslSide) dslSide.sync();
     selected=null; drawDetail(null); applyFilters();
   });
+
+  initClears();
+  initXf();
 
   var ds=ALL.map(function(r){return r.__date;}).filter(Boolean).sort(function(a,b){return a-b;});
   if(ds.length){
@@ -540,7 +830,30 @@ function initControls(){
     $("#sd_from").min=$("#sd_to").min=lo;
     $("#sd_from").max=$("#sd_to").max=hi;
     $("#sdThrough").textContent=fmtDate(ds[ds.length-1]);
+    /* The sidebar slider spans the dates actually loaded — dragging it can
+       only ever narrow what is already in the browser. */
+    dslSide=makeDateSlider($("#sd_dsl"),{
+      min:lo, max:hi, fromEl:$("#sd_from"), toEl:$("#sd_to"),
+      onCommit:function(){ selected=null; drawDetail(null); applyFilters(); }
+    });
+  }else{
+    var h=$("#sd_dsl"); if(h) h.hidden=true;
   }
+}
+
+/* A row count sitting exactly on the DataPage's record cap means Caspio
+   stopped sending, not that the data ran out. Everything downstream — the
+   tiles, both cross-filter panels, the date range — then describes a
+   truncated slice, so warn before any of it is read as a total. */
+function drawLoadWarn(n){
+  var el=ROOT.querySelector("#sdLoadWarn");
+  if(!el) return;
+  if(n!==LOAD_CAP){ el.hidden=true; el.textContent=""; return; }
+  el.hidden=false;
+  el.innerHTML="<strong>Incomplete load — "+nf.format(LOAD_CAP)+" records is this DataPage's limit.</strong>"+
+    "Caspio stopped at the cap, so more records match this scope than are shown. "+
+    "Counts, totals and the cross-filter panels below are all undercounts. "+
+    "Narrow the Regional Center or the incident date range above and load again.";
 }
 
 function start(rawRows){
@@ -549,6 +862,7 @@ function start(rawRows){
   applyFilters();
   drawDetail(null);
   drawScopeLine(ALL.length);
+  drawLoadWarn(ALL.length);
 }
 
 /* =====================================================================
@@ -649,6 +963,18 @@ function initScope(){
   var fromEl=ROOT.querySelector("#sc_from"), toEl=ROOT.querySelector("#sc_to");
   if(fromEl) fromEl.value=sc.from;
   if(toEl)   toEl.value=sc.to;
+
+  /* The scope slider's domain comes from SCOPE, not from the data: it has
+     to be able to ask for dates the current slice does not contain. */
+  if(fromEl && toEl){
+    var hi=SCOPE.maxDate || isoDate(new Date());
+    fromEl.min=toEl.min=SCOPE.minDate; fromEl.max=toEl.max=hi;
+    dslScope=makeDateSlider(ROOT.querySelector("#sc_dsl"),
+      {min:SCOPE.minDate, max:hi, fromEl:fromEl, toEl:toEl});
+    [fromEl,toEl].forEach(function(el){
+      el.addEventListener("change",function(){ if(dslScope) dslScope.sync(); });
+    });
+  }
 
   ROOT.querySelector("#sc_load").addEventListener("click",function(){
     var msg=ROOT.querySelector("#sdScopeMsg");
@@ -793,4 +1119,3 @@ function whenRoot(){
 whenRoot();
 
 })();
-OLD
