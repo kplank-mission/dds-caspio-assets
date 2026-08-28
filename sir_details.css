@@ -233,3 +233,23 @@
 
 /* baseline (no-parameter) build — the load stopwatch replaces the scope bar */
 #sir-details .scope .perf{color:#c8d4e0;font-size:12px;font-weight:600;letter-spacing:.02em;font-variant-numeric:tabular-nums}
+
+/* ---------------------------------------------------------------------
+   The one block NOT scoped under #sir-details, and the only one that may
+   not be. Caspio renders its own results table alongside ours; these are
+   the class names it uses to do it. This lived in the DataPage Header
+   until the header hit Caspio's 10,000-character ceiling — it is stylesheet
+   weight rather than header weight now. hideCaspioResults() in the JS does
+   the same job structurally, because these class names change between
+   Caspio account versions.
+   --------------------------------------------------------------------- */
+.cbResultSetTable,
+.cbResultSetNavigationTable,
+.cbResultSetRecordCount,
+.cbResultSetPanelContainer,
+.cbResultSetPanel,
+.cbResultSetDataDIV,
+.cbResultSetNavigationDIV,
+.cbResultSetNavigationTableCell,
+.cbResultSetTableTop,
+.cbResultSetTableBottom{display:none!important}
