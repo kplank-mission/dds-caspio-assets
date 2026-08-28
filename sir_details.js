@@ -92,7 +92,7 @@ var TRUTHY = ["X","x","Y","YES","Yes","yes","TRUE","True","true","1"];
    your real Regional Center codes exactly as they appear in the RC column.
    ===================================================================== */
 var SCOPE = {
-  param : {rc:"RC"},   // URL / Caspio parameter name
+  param : {rc:"RC", from:"From", to:"To"},  // URL / Caspio parameter names
   rcs   : ["ACRC", "CVRC", "ELARC","FDLRC", "FNRC", "GGRC", "HRC", "IRC", "KRC", "NBRC", "NLACRC","RCEB", "RCOC", "RCRC", "SARC", "SCLARC", "SDRC", "SGPRC", "TCRC", "VMRC", "WRC"],
   allRc : true         // false = force a single RC, no "All" option
 };
@@ -555,9 +555,30 @@ function start(rawRows){
    ============================== SCOPE ================================
    The bar under the header does not filter anything itself — it rewrites
    the page URL and reloads, so Caspio re-runs its query and sends back a
-   different slice. The only server-side parameter is RC; every date
-   narrowing happens in the sidebar, on the rows Caspio already returned.
+   different slice. Regional Center and the incident-date window are the
+   two server-side parameters: they decide WHICH records cross the wire.
+   Every other filter lives in the sidebar and works on the rows already
+   loaded, so it costs nothing and needs no reload.
+
+   All three are optional. An empty box is dropped from the URL rather than
+   sent blank, which is what Caspio needs to fall through to "match all".
+
+   Caspio Date/Time criteria expect MM/DD/YYYY on the URL; <input type=date>
+   speaks YYYY-MM-DD. isoToUs/usToIso translate between the two.
    ===================================================================== */
+
+function pad2(n){ return (n<10?"0":"")+n; }
+
+function isoToUs(s){
+  var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s||"").trim());
+  return m ? m[2]+"/"+m[3]+"/"+m[1] : "";
+}
+function usToIso(s){
+  var v=String(s||"").trim();
+  var m=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);
+  if(m) return m[3]+"-"+pad2(+m[1])+"-"+pad2(+m[2]);
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "";
+}
 
 function urlParams(){
   var out={}, q=location.search.replace(/^\?/,"");
@@ -571,16 +592,23 @@ function urlParams(){
   return out;
 }
 
-/* What the URL asks for. */
+/* What the URL asks for. Any of the three may be blank = no narrowing. */
 function currentScope(){
-  return {rc:(urlParams()[SCOPE.param.rc]||"").trim()};
+  var p=urlParams();
+  return {
+    rc  : (p[SCOPE.param.rc]||"").trim(),
+    from: usToIso(p[SCOPE.param.from]),
+    to  : usToIso(p[SCOPE.param.to])
+  };
 }
 
 /* Keep any unrelated parameters already on the URL. An empty RC is dropped
    rather than sent blank, so Caspio's criterion matches every RC. */
 function scopeUrl(sc){
   var p=urlParams();
-  p[SCOPE.param.rc] = sc.rc||"";
+  p[SCOPE.param.rc]   = sc.rc||"";
+  p[SCOPE.param.from] = isoToUs(sc.from);
+  p[SCOPE.param.to]   = isoToUs(sc.to);
   p.sdscope="1";
   var parts=[];
   for(var k in p){
@@ -595,13 +623,17 @@ function drawScopeLine(n){
   if(!el) return;
   var sc=currentScope();
   var bits=[sc.rc||"All Regional Centers"];
+  if(sc.from && sc.to)   bits.push(isoToUs(sc.from)+" - "+isoToUs(sc.to));
+  else if(sc.from)       bits.push("on or after "+isoToUs(sc.from));
+  else if(sc.to)         bits.push("on or before "+isoToUs(sc.to));
+  else                   bits.push("all dates");
   bits.push(n==null ? "loading…"
                     : n.toLocaleString()+" record"+(n===1?"":"s")+" loaded");
   el.textContent="Showing  "+bits.join("   ·   ");
 }
 
-/* Wires the Regional Center picker. Returns false — it never navigates on
-   its own; only the "Load records" button does. */
+/* Wires the Regional Center picker and the date window. Returns false - it
+   never navigates on its own; only the "Load records" button does. */
 function initScope(){
   if(!ROOT.querySelector("#sdScope")) return false;
   var sc=currentScope();
@@ -614,11 +646,22 @@ function initScope(){
   });
   sel.innerHTML=opts.join("");
 
+  var fromEl=ROOT.querySelector("#sc_from"), toEl=ROOT.querySelector("#sc_to");
+  if(fromEl) fromEl.value=sc.from;
+  if(toEl)   toEl.value=sc.to;
+
   ROOT.querySelector("#sc_load").addEventListener("click",function(){
     var msg=ROOT.querySelector("#sdScopeMsg");
+    var from=fromEl?fromEl.value:"", to=toEl?toEl.value:"";
     if(!SCOPE.allRc && !sel.value){ msg.textContent="Choose a Regional Center."; return; }
+    if(from && to && from>to){ msg.textContent="The From date is after the To date."; return; }
     msg.textContent="";
-    location.assign(scopeUrl({rc:sel.value}));
+    location.assign(scopeUrl({rc:sel.value, from:from, to:to}));
+  });
+
+  /* Enter anywhere in the scope bar loads, same as the button. */
+  ROOT.querySelector("#sdScope").addEventListener("keydown",function(e){
+    if(e.keyCode===13){ e.preventDefault(); ROOT.querySelector("#sc_load").click(); }
   });
 
   drawScopeLine(null);
@@ -647,6 +690,26 @@ function readEmbeddedRows(){
   return out;
 }
 
+/* Caspio still lays out its own results — one row per record, every field
+   removed, so they render as blank strips under the dashboard, plus the
+   pager beneath them. The stylesheet hides the classes Caspio uses TODAY,
+   but those names change between account versions, so do it structurally
+   as well: climb from a record block to the highest ancestor that does not
+   contain our own UI, and hide that. Rows are read before this runs, and
+   textContent keeps working inside a display:none subtree anyway. */
+function hideCaspioResults(){
+  var blocks=document.querySelectorAll("[data-sir-rec]");
+  for(var i=0;i<blocks.length;i++){
+    var el=blocks[i], top=null;
+    while(el.parentNode && el.parentNode.nodeType===1 && el.parentNode!==document.body){
+      el=el.parentNode;
+      if(ROOT && el.contains(ROOT)) break;   /* any higher would hide us too */
+      top=el;
+    }
+    if(top && top.style) top.style.display="none";
+  }
+}
+
 /* Caspio results may be injected asynchronously, so poll briefly. */
 function loadEmbedded(){
   var tries=0, limit=Math.ceil(WAIT_MS/100), timer=null;
@@ -656,6 +719,7 @@ function loadEmbedded(){
       clearInterval(timer);
       if(window.console) console.log("SIR details: read "+rows.length+" record block(s).");
       PERF.blocks=nowMs(); PERF.rows=rows.length;
+      hideCaspioResults();
       start(rows);
       PERF.done=nowMs(); reportPerf();
     }else if(++tries>limit){
