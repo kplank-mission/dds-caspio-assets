@@ -186,13 +186,15 @@ var GRID = [
   {c:"__flags", t:"Notified"}
 ];
 
-/* How the detail panel is grouped. */
+/* How the detail panel is grouped. Order matters: the narrative renders
+   first and full width (it is the part people actually read and it needs
+   the measure), and the four that follow pair up two across. */
 var SECTIONS = [
+  {title:"Narrative", narrative:true, fields:["IncidentDescription","SIRFollowupAction"]},
   {title:"Incident", fields:["IncidentDate","IncidentNumber","RC","IncidentTypes","CombinedSubtypes","newtypeonly","Perpetrator","ActionsTaken"]},
   {title:"Individual", fields:["UCI","AgeGroup","ResidenceTypeinCMFPOS","AllNeeds","DevelopmentalDiagnoses","HealthDiagnoses","PsychiatricDiagnoses","Prescriptions","OtherCDER"]},
   {title:"Vendor and organization", fields:["Vendor","SubmittedVendorifDifferent","VendorName","VendorNameinSIR","VendorTypeDetail","OrganizationID","OrgName"]},
-  {title:"Notifications", fields:["APSNotified","CPSNotified","LawEnforcementNotified"]},
-  {title:"Narrative", narrative:true, fields:["IncidentDescription","SIRFollowupAction"]}
+  {title:"Notifications", fields:["APSNotified","CPSNotified","LawEnforcementNotified"]}
 ];
 
 /* =====================================================================
@@ -694,6 +696,16 @@ function drawTable(){
   $("#sd_pageno").textContent="Page "+page+" of "+pages;
   $("#sd_prev").disabled=(page<=1);
   $("#sd_next").disabled=(page>=pages);
+
+  /* Say how many rows the button will actually write, so nobody assumes it
+     exports only the page on screen. */
+  var xp=$("#sd_export");
+  if(xp){
+    xp.disabled=!VIEW.length;
+    xp.textContent=VIEW.length
+      ? "Export "+nf.format(VIEW.length)+" record"+(VIEW.length===1?"":"s")+" to CSV"
+      : "Export to CSV";
+  }
 }
 
 function fieldHtml(col,r,narrative){
@@ -724,12 +736,76 @@ function drawDetail(r){
     "<h3>Incident "+esc(r.IncidentNumber||"—")+"</h3>"+
     '<span class="date">'+esc(fmtDate(r.IncidentDate)||"date not recorded")+"</span></div>";
 
+  html+='<div class="sects">';
   SECTIONS.forEach(function(sec){
-    html+='<div class="sect"><h4>'+esc(sec.title)+'</h4><div class="body'+(sec.narrative?" narrative":"")+'">';
+    html+='<div class="sect'+(sec.narrative?" wide":"")+'"><h4>'+esc(sec.title)+
+          '</h4><div class="body'+(sec.narrative?" narrative":"")+'">';
     sec.fields.forEach(function(col){ html+=fieldHtml(col,r,sec.narrative); });
     html+="</div></div>";
   });
-  box.innerHTML=html;
+  box.innerHTML=html+"</div>";
+}
+
+/* ---------------------- CSV export ----------------------
+   Exports VIEW — everything the current filters select, not just the page
+   on screen — with every SCHEMA column, not just the eleven in the grid.
+
+   Excel will not read a bare UTF-8 file correctly; it needs the byte-order
+   mark, or names and diagnoses with accents arrive mangled. The .csv then
+   opens straight into Excel on a double-click.
+
+   Note this writes HIPAA-sensitive records to the user's own machine, where
+   none of the protections around this page apply any more.
+   -------------------------------------------------------- */
+
+function csvCell(v){
+  var s=(v==null?"":String(v));
+  /* Quote everything: the narrative fields carry commas, quotes and real
+     newlines, and half-quoting is how CSV exports break. */
+  return '"'+s.replace(/"/g,'""')+'"';
+}
+
+function csvRows(rows){
+  var cols=SCHEMA.map(function(f){return f.c;});
+  var out=[cols.map(function(c){return csvCell(labelOf(c));}).join(",")];
+  rows.forEach(function(r){
+    out.push(cols.map(function(c){
+      /* Send the date in ISO so Excel and Stata both parse it, rather than
+         the "Sep 30, 2025" the grid shows. */
+      if(META[c]&&META[c].date && r.__date) return csvCell(isoDate(r.__date));
+      return csvCell(r[c]);
+    }).join(","));
+  });
+  return out.join("\r\n");
+}
+
+/* Name the file after what is actually IN it, not after the scope — the
+   sidebar can narrow to one RC inside an all-RC scope, and a file full of
+   ACRC records called "AllRC" is a filing error waiting to happen. */
+function exportName(){
+  var bits=["SIR_details"], rcs={}, n=0;
+  VIEW.forEach(function(r){ if(!isBlank(r.RC) && !rcs[r.RC]){ rcs[r.RC]=1; n++; } });
+  bits.push(n===1 ? Object.keys(rcs)[0] : (n===0 ? "noRC" : n+"RCs"));
+  var ds=VIEW.map(function(r){return r.__date;}).filter(Boolean).sort(function(a,b){return a-b;});
+  if(ds.length) bits.push(isoDate(ds[0])+"_to_"+isoDate(ds[ds.length-1]));
+  return bits.join("_")+".csv";
+}
+
+function exportCsv(){
+  if(!VIEW.length) return;
+  /* U+FEFF is the byte-order mark, built from its code point so no editor or
+     encoding step can silently eat an invisible character. Excel needs it to
+     read the file as UTF-8; without it, accented names arrive mangled. */
+  var BOM=String.fromCharCode(0xFEFF);
+  var blob=new Blob([BOM+csvRows(VIEW)],{type:"text/csv;charset=utf-8;"});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement("a");
+  a.href=url; a.download=exportName();
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  /* Revoking immediately can cancel the download in some browsers. */
+  setTimeout(function(){ URL.revokeObjectURL(url); },1000);
 }
 
 /* ---------------------- per-filter clear buttons ----------------------
@@ -820,6 +896,9 @@ function initControls(){
     if(dslSide) dslSide.sync();
     selected=null; drawDetail(null); applyFilters();
   });
+
+  var xp=$("#sd_export");
+  if(xp) xp.addEventListener("click",exportCsv);
 
   initClears();
   initXf();

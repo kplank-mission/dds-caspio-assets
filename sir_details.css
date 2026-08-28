@@ -40,6 +40,10 @@
 /* scope bar — the server-side cut, distinct from the sidebar filters */
 #sir-details .scope{background:#1f2937;border-bottom:1px solid #2f3b4a;padding:10px 20px;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
 #sir-details .scope .sctl{display:flex;flex-direction:column;gap:3px}
+/* The two date controls and their slider travel together, so the slider is
+   exactly as wide as the inputs it drives rather than the whole bar. */
+#sir-details .scope .sdates{display:grid;grid-template-columns:auto auto;gap:3px 12px;align-items:end}
+#sir-details .scope .sdates .dslhost{grid-column:1/-1}
 #sir-details .scope label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#9fb0c0;font-weight:600}
 #sir-details .scope select,#sir-details .scope input{padding:6px 8px;border:1px solid #3a4757;border-radius:7px;font:inherit;background:#111820;color:#fff;min-width:150px}
 #sir-details .scope select:focus,#sir-details .scope input:focus{outline:2px solid #4fd1c5;border-color:#4fd1c5}
@@ -87,7 +91,7 @@
 #sir-details .dslhost.full .dsl-fill{background:var(--muted-2);opacity:.4}
 
 /* scope-bar variant sits on the dark strip */
-#sir-details .dslhost.dark{flex-basis:100%;margin-top:2px}
+#sir-details .dslhost.dark{margin-top:2px}
 #sir-details .dslhost.dark .dsl-rail{background:#3a4757}
 #sir-details .dslhost.dark .dsl-fill{background:#4fd1c5}
 #sir-details .dslhost.dark .dsl input.dsl-r::-webkit-slider-thumb{background:#111820;border-color:#4fd1c5}
@@ -120,11 +124,6 @@
 #sir-details .clr:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 #sir-details .clr[hidden]{display:none}
 
-#sir-details fieldset.flags{border:1px solid var(--line);border-radius:8px;padding:8px 10px 10px;margin:0 0 12px;position:relative}
-#sir-details fieldset.flags .clr{top:6px;right:8px}
-#sir-details fieldset.flags legend{font-weight:600;font-size:11px;color:var(--muted);padding:0 4px}
-#sir-details fieldset.flags label{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink);margin:3px 0}
-#sir-details fieldset.flags input{width:auto;margin:0}
 #sir-details details.more{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:12px;background:var(--panel-2)}
 #sir-details details.more summary{cursor:pointer;font-weight:600;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 #sir-details details.more[open] summary{margin-bottom:10px}
@@ -191,6 +190,11 @@
 /* pager */
 #sir-details .pager{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 2px 0}
 #sir-details .rowcount{font-size:11px;color:var(--muted)}
+#sir-details .xport{padding:5px 11px;border:1px solid var(--org);border-radius:6px;background:var(--panel);
+  color:var(--org);cursor:pointer;font:inherit;font-size:11px;font-weight:700}
+#sir-details .xport:hover:not(:disabled){background:#eef6f5}
+#sir-details .xport:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+#sir-details .xport:disabled{opacity:.45;cursor:default;border-color:var(--line);color:var(--muted)}
 #sir-details .pagerctl{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
 #sir-details .pagerctl label{font-weight:600}
 #sir-details .pagerctl select{padding:4px 6px;border:1px solid var(--line);border-radius:6px;font:inherit;background:var(--panel);color:var(--ink)}
@@ -208,9 +212,14 @@
 #sir-details .detail-hd h3{margin:0;font-size:14px}
 #sir-details .detail-hd .pill{background:var(--org);color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px}
 #sir-details .detail-hd .date{margin-left:auto;font-size:12px;color:var(--muted);font-weight:600}
-#sir-details .sect{border:1px solid var(--line);border-radius:8px;margin-bottom:12px;overflow:hidden}
+/* Sections pair up two across, so a record reads as four related blocks
+   rather than one long scroll. The narrative runs full width above them —
+   it is the part people actually read, and it needs the measure. */
+#sir-details .sects{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+#sir-details .sect.wide{grid-column:1/-1}
+#sir-details .sect{border:1px solid var(--line);border-radius:8px;overflow:hidden}
 #sir-details .sect > h4{margin:0;padding:8px 12px;background:var(--panel-2);border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2)}
-#sir-details .sect .body{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1px;background:var(--line)}
+#sir-details .sect .body{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1px;background:var(--line)}
 #sir-details .sect .body.narrative{grid-template-columns:1fr}
 #sir-details .field{background:var(--panel);padding:10px 12px}
 #sir-details .field .k{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);margin-bottom:5px}
@@ -225,6 +234,7 @@
   #sir-details .layout{grid-template-columns:1fr}
   #sir-details .filters{position:static;max-height:none}
   #sir-details .xf{grid-template-columns:1fr}
+  #sir-details .sects{grid-template-columns:1fr}
   #sir-details .summary .tile.wide{grid-column:span 2}
 }
 @media (prefers-reduced-motion:reduce){
