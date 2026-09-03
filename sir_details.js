@@ -112,6 +112,18 @@ var SCOPE = {
      see scopeDomain(). */
   months : 25,
 
+  /* How many of those months the handles sit on when the page is opened
+     cold — 3 is the current month and two behind it. This is only the
+     OPENING position: the handles still reach the full `months` domain,
+     and the user can drag them anywhere in it.
+
+     Because the scope decides what Caspio sends, an opening position is
+     worth nothing unless the page acts on it, so a cold arrival navigates
+     once to this window before loading anything — see openingScope().
+     Set to 0, or to `months` or more, to open on the whole domain and
+     never redirect. */
+  openMonths : 3,
+
   /* Absolute guard rails for that rolling domain, not the domain itself.
      `minDate` is a floor the window never runs past even if the data is
      older than the table; `maxDate` a ceiling, "" for today. */
@@ -1244,7 +1256,10 @@ function drawLoadWarn(n){
 
 function start(rawRows){
   ALL=(rawRows||[]).map(normalize);
-  afterLoadScope();      /* before the sidebar: it can narrow the RC filter */
+  /* Before the sidebar: it can narrow the RC filter. True means it has sent
+     the page to a wider scope, and there is no point dressing a view that
+     is already being replaced. */
+  if(afterLoadScope()) return;
   initControls();
   applyFilters();
   drawDetail(null);
@@ -1516,6 +1531,37 @@ function scopeDomain(){
   return {min:isoDate(lo), max:isoDate(hi)};
 }
 
+/* ---------------- where the handles open ----------------
+   The newest SCOPE.openMonths months of the same domain: the high end is
+   the domain's own top, the low end the first day of the month that many
+   months back. Returns null when the setting asks for the whole domain,
+   which is the "no opening window, never redirect" case.
+   -------------------------------------------------------------------- */
+function openingScope(){
+  var n=SCOPE.openMonths|0, total=Math.max(1,SCOPE.months|0);
+  if(n<1 || n>=total) return null;
+  var dom=scopeDomain(), a=anchorMonth();
+  var lo=new Date(Date.UTC(a.y, a.m-(n-1), 1));
+  var from=isoDate(lo);
+  if(from<dom.min) from=dom.min;        /* ISO dates sort as strings */
+  if(from>=dom.max) return null;        /* guard rails left nothing to open on */
+  return {from:from, to:dom.max};
+}
+
+/* True when this page view arrived cold — no date window asked for, and no
+   sign that the user chose "all dates" on purpose. `sdscope` is written by
+   scopeUrl(), so its presence means the Load button, not a fresh visit.
+
+   The remembered flag is the loop guard: if a deployment strips unknown
+   parameters, the redirected URL comes back looking cold again, and
+   without it the page would bounce forever. */
+function wantsOpeningScope(){
+  var p=urlParams(), sc=currentScope();
+  if(sc.from || sc.to) return false;
+  if(p.sdscope) return false;
+  return ssGet("opened")!=="1";
+}
+
 function tuneScopeDates(){
   var fromEl=ROOT.querySelector("#sc_from"), toEl=ROOT.querySelector("#sc_to");
   if(!fromEl||!toEl) return;
@@ -1531,8 +1577,26 @@ function tuneScopeDates(){
 /* What the load just taught us about the user: which Regional Centers their
    account can reach, and how recent the data is. Both belong to the scope
    bar, which is built before either is known, so it is corrected here. */
+/* The first visit of a tab has to guess the anchor month — nothing has
+   loaded yet, so anchorMonth() can only offer today. A deployment whose
+   table lags more than SCOPE.openMonths behind therefore opens on a window
+   with nothing in it, which reads as a broken dashboard rather than as a
+   scope that missed. Zero records from a window the PAGE chose (never one
+   the user chose) buys one retreat to the whole domain: that load also
+   teaches the tab the real newest month, so the next visit opens right.
+   Returns true when it has navigated. */
+function retreatFromEmptyOpening(){
+  if(ALL.length || ssGet("widened")==="1") return false;
+  var sc=currentScope();
+  if(!sc.from || ssGet("autowin")!==sc.from+"|"+sc.to) return false;
+  ssSet("widened","1");
+  location.replace(scopeUrl({rc:sc.rc, from:"", to:""}));
+  return true;
+}
+
 function afterLoadScope(){
-  if(!ROOT.querySelector("#sdScope")) return;
+  if(!ROOT.querySelector("#sdScope")) return false;
+  if(retreatFromEmptyOpening()) return true;
   var sc=currentScope(), seen={}, list=[];
   ALL.forEach(function(r){
     var v=String(r.RC||"").trim();
@@ -1550,12 +1614,31 @@ function afterLoadScope(){
     console.info("SIR details: Regional Center access came from "+rcSource()+
                  " — offering "+built.list.join(", ")+(built.lock?" (locked)":""));
   }
+  return false;
 }
 
-/* Wires the Regional Center picker and the date window. Returns false - it
-   never navigates on its own; only the "Load records" button does. */
+/* Wires the Regional Center picker and the date window. Returns true when
+   it has sent the page somewhere else — the caller must then stop, because
+   the load it was about to start belongs to a URL that is going away. The
+   only two things that navigate are this opening redirect, once per tab,
+   and the "Load records" button. */
 function initScope(){
   if(!ROOT.querySelector("#sdScope")) return false;
+
+  /* Do this before anything is drawn or fetched: the point of the opening
+     window is to keep a cold visit from pulling every month in the table
+     (and tripping LOAD_CAP) on the way to showing the last three. */
+  if(wantsOpeningScope()){
+    var open=openingScope();
+    if(open){
+      ssSet("opened","1");
+      ssSet("autowin",open.from+"|"+open.to);
+      location.replace(scopeUrl({rc:currentScope().rc, from:open.from, to:open.to}));
+      return true;
+    }
+  }
+  ssSet("opened","1");
+
   var sc=currentScope();
   buildScopeRc();
 
