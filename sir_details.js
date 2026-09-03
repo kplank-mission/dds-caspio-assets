@@ -514,7 +514,12 @@ function sortView(){
 }
 
 /* ---------------------- rendering ---------------------- */
-function render(){ drawSummary(); drawXf(); drawTable(); }
+function render(){
+  drawSummary(); drawXf(); drawTable();
+  /* The hidden page still costs nothing until it is asked for, but the
+     visible one has to be redrawn on every filter change. */
+  if(VIEWPAGE==="timeline") drawTimeline();
+}
 
 /* ---------------------- cross-filter panels ----------------------
    Counts are incidents (rows), not distinct anything: one row is one
@@ -746,6 +751,288 @@ function drawDetail(r){
   box.innerHTML=html+"</div>";
 }
 
+/* =====================================================================
+   TIMELINE PAGE
+   Recreates the Power BI timeline page: one lane per individual, the ten
+   individuals with the most incidents in the current selection, the x
+   axis spanning the selected time window, and one colour-coded dot per
+   incident. Dots landing on the same date fan out into a cluster rather
+   than hiding one another.
+
+   It reads VIEW, so every sidebar filter and both cross-filter panels
+   apply exactly as they do to the grid. Nothing here filters separately.
+   ===================================================================== */
+var TL = {
+  rows: 10,                    // lanes drawn — the "top N" of the page
+  colorCol: "IncidentTypes",   // dot colour comes from this column's first token
+  dotMax: 14,                  // dots drawn per date before a "+n" chip takes over
+  /* Twelve categorical colours, then grey for everything past the top
+     twelve incident types. Assigned from ALL rather than VIEW so a colour
+     means the same thing no matter how the page is filtered. */
+  palette: ["#0f766e","#b45309","#1d4ed8","#b91c1c","#7c3aed","#0891b2",
+            "#4d7c0f","#c2410c","#be185d","#4338ca","#0e7490","#a16207"],
+  other: "#94a3b8"
+};
+
+var VIEWPAGE="details";   // which card page is on screen
+var tlColor={};           // incident type -> colour, built once per load
+
+/* The first token of the colour column, which is the type Power BI keys
+   the dot colour off when a record carries several. */
+function tlKey(r){
+  var ts=tokens(r,TL.colorCol);
+  return ts.length?ts[0]:"Not recorded";
+}
+
+/* Colour lookup, built from ALL and ordered by how often each type
+   occurs, so the busiest types get the strong colours and the mapping
+   does not shuffle as the user filters. */
+function buildTlColors(){
+  tlColor={};
+  var map={}, keys=[];
+  ALL.forEach(function(r){
+    var k=tlKey(r);
+    if(map[k]===undefined){ map[k]=0; keys.push(k); }
+    map[k]++;
+  });
+  keys.sort(function(a,b){ return (map[b]-map[a]) || a.localeCompare(b); });
+  keys.forEach(function(k,i){
+    tlColor[k] = i<TL.palette.length ? TL.palette[i] : TL.other;
+  });
+}
+
+/* The x-axis window. The date boxes win when they are set, because that
+   is the window the user chose; otherwise the extent of the rows on
+   screen, which is the widest thing worth drawing. */
+function tlWindow(rows){
+  var f=$("#sd_from").value?parseDate($("#sd_from").value):null;
+  var t=$("#sd_to").value?parseDate($("#sd_to").value):null;
+  if(!f||!t){
+    var lo=null,hi=null;
+    rows.forEach(function(r){
+      if(!r.__date) return;
+      if(!lo||r.__date<lo) lo=r.__date;
+      if(!hi||r.__date>hi) hi=r.__date;
+    });
+    f=f||lo; t=t||hi;
+  }
+  if(!f||!t) return null;
+  if(f>t){ var s=f; f=t; t=s; }
+  /* A single-day window has no width to map onto; open it out to a week
+     so the lane still reads as a timeline. */
+  if(t.getTime()-f.getTime() < 6*DAY_MS) t=new Date(f.getTime()+6*DAY_MS);
+  return {a:f.getTime(), b:t.getTime()};
+}
+
+/* Position along a lane, as a CSS length. The 13px inset on each side
+   keeps a dot sitting on the first or last day of the window from being
+   sliced in half by the lane's edge. */
+function tlPos(ms,win){
+  var p=(ms-win.a)/(win.b-win.a);
+  p=Math.max(0,Math.min(1,p));
+  return "calc(13px + (100% - 26px) * "+p.toFixed(5)+")";
+}
+
+/* Axis ticks, aiming for about eight. Short windows tick in days, the
+   rest on whole months so labels land on calendar boundaries. */
+function tlTicks(win){
+  var out=[], days=Math.round((win.b-win.a)/DAY_MS);
+  if(days<=90){
+    var step=Math.max(1,Math.ceil(days/8));
+    for(var d=0;d<=days;d+=step) out.push(new Date(win.a+d*DAY_MS));
+  }else{
+    var s=new Date(win.a), e=new Date(win.b);
+    var months=(e.getUTCFullYear()-s.getUTCFullYear())*12+(e.getUTCMonth()-s.getUTCMonth());
+    var stepM=Math.max(1,Math.ceil((months+1)/8));
+    var y=s.getUTCFullYear(), m=s.getUTCMonth();
+    if(s.getUTCDate()>1){ m++; if(m>11){m=0;y++;} }
+    for(;;){
+      var t=Date.UTC(y,m,1);
+      if(t>win.b) break;
+      out.push(new Date(t));
+      m+=stepM; while(m>11){m-=12;y++;}
+    }
+  }
+  return out;
+}
+function tlTickLabel(d,win){
+  var days=Math.round((win.b-win.a)/DAY_MS);
+  return days<=90
+    ? d.toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:"UTC"})
+    : d.toLocaleDateString("en-US",{month:"short",year:"2-digit",timeZone:"UTC"});
+}
+
+function drawTimeline(){
+  var host=$("#sdPgTimeline"); if(!host) return;
+
+  /* countBy already counts incidents per UCI the way the cross-filter
+     panel does, sorted descending — the top of that list IS the top ten. */
+  var lanes=countBy(VIEW,"UCI",null).slice(0,TL.rows);
+  var win=tlWindow(VIEW);
+
+  if(!lanes.length || !win){
+    host.innerHTML='<div class="tlempty"><strong>Nothing to plot</strong>'+
+      'No records with an incident date match this selection.</div>';
+    return;
+  }
+
+  var byUci={}, used={};
+  lanes.forEach(function(l){ byUci[l.key]=[]; });
+  VIEW.forEach(function(r){
+    var k=String(r.UCI||"");
+    if(!byUci[k] || !r.__date) return;
+    byUci[k].push(r);
+    used[tlKey(r)]=1;
+  });
+
+  var ticks=tlTicks(win);
+  var gridHtml="";
+  ticks.forEach(function(t){
+    gridHtml+='<i class="tlgl" style="left:'+tlPos(t.getTime(),win)+'"></i>';
+  });
+
+  var html='<div class="tlhd">'+
+    '<h3>Top '+lanes.length+' individual'+(lanes.length===1?"":"s")+' by incident count</h3>'+
+    '<span class="tlwin mono">'+esc(fmtDate(new Date(win.a)))+'  to  '+esc(fmtDate(new Date(win.b)))+'</span>'+
+    '</div>';
+  /* What the page means is explained in the card header, beside the tabs,
+     where sir_editor.html can still reach the wording. */
+
+  /* Legend: only the types actually on screen, in palette order, so the
+     strongest colours read first. */
+  var legend=Object.keys(used).sort(function(a,b){
+    var ia=TL.palette.indexOf(tlColor[a]||TL.other), ib=TL.palette.indexOf(tlColor[b]||TL.other);
+    if(ia<0) ia=99;
+    if(ib<0) ib=99;
+    return (ia-ib) || a.localeCompare(b);
+  });
+  html+='<div class="tllegend">';
+  legend.forEach(function(k){
+    html+='<span class="tlkey"><i style="background:'+(tlColor[k]||TL.other)+'"></i>'+esc(k)+'</span>';
+  });
+  html+='</div>';
+
+  html+='<div class="tllanes">';
+  lanes.forEach(function(l){
+    var rows=byUci[l.key]||[];
+
+    /* One cluster per date. Ordering a cluster by type keeps the same
+       colour together when a date carries several records. */
+    var byDay={}, dayKeys=[];
+    rows.forEach(function(r){
+      var k=isoDate(r.__date);
+      if(!byDay[k]){ byDay[k]=[]; dayKeys.push(k); }
+      byDay[k].push(r);
+    });
+
+    var dots="";
+    dayKeys.forEach(function(dk){
+      var g=byDay[dk].slice().sort(function(a,b){return tlKey(a).localeCompare(tlKey(b));});
+      var k=g.length, shown=Math.min(k,TL.dotMax);
+      /* Tighter spacing as a cluster grows: that is what makes a busy date
+         read as one dense smear instead of running into its neighbours. */
+      var gap = k<=3 ? 10 : (k<=6 ? 7 : (k<=10 ? 5 : 4));
+      var left=tlPos(parseDate(dk).getTime(),win);
+      for(var i=0;i<shown;i++){
+        var r=g[i], key=tlKey(r);
+        var off=(i-(shown-1)/2)*gap;
+        var tip=fmtDate(r.__date)+"  ·  "+key+
+                (r.IncidentNumber?"  ·  Incident "+r.IncidentNumber:"")+
+                (k>1?"  ("+(i+1)+" of "+k+" on this date)":"");
+        dots+='<button type="button" class="tldot" data-uci="'+esc(l.key)+'" data-i="'+esc(dk)+'" data-n="'+i+'"'+
+              ' style="left:'+left+';margin-left:'+off.toFixed(1)+'px;background:'+(tlColor[key]||TL.other)+'"'+
+              ' title="'+esc(tip)+'"><span class="sr">'+esc(tip)+'</span></button>';
+      }
+      if(k>shown){
+        dots+='<span class="tlmore" style="left:'+left+';margin-left:'+
+              ((shown-1)/2*gap+9).toFixed(1)+'px" title="'+
+              esc(fmtDate(parseDate(dk))+": "+k+" incidents on this date")+'">+'+(k-shown)+'</span>';
+      }
+    });
+
+    html+='<div class="tlrow'+(xfUci===l.key?" on":"")+'">'+
+      '<button type="button" class="tllab" data-uci="'+esc(l.key)+'"'+
+        ' title="Filter the dashboard to UCI '+esc(l.key)+'">'+
+        '<span class="u mono">'+esc(l.key)+'</span>'+
+        '<span class="n mono">'+nf.format(l.n)+'</span></button>'+
+      '<div class="tlplot">'+gridHtml+'<i class="tlbase"></i>'+dots+'</div></div>';
+  });
+
+  /* Axis last, so it sits directly under the lowest lane. */
+  var axis="";
+  ticks.forEach(function(t){
+    axis+='<span class="tlt" style="left:'+tlPos(t.getTime(),win)+'">'+esc(tlTickLabel(t,win))+'</span>';
+  });
+  html+='<div class="tlrow tlaxisrow"><div class="tllabspacer"></div>'+
+        '<div class="tlplot tlaxis">'+gridHtml+axis+'</div></div>';
+  html+='</div>';
+
+  var tot=0; lanes.forEach(function(l){tot+=l.n;});
+  html+='<p class="tlfoot">These '+lanes.length+' individual'+(lanes.length===1?"":"s")+' account for '+
+        nf.format(tot)+' of the '+nf.format(VIEW.length)+' incident'+(VIEW.length===1?"":"s")+
+        ' in the current selection.</p>';
+
+  host.innerHTML=html;
+}
+
+/* A dot click hands the record to the Details page, and takes the grid to
+   whichever page of VIEW that record sits on — otherwise the detail panel
+   would open on a record the grid is not showing. */
+function tlOpenRecord(uci,iso,n){
+  var hits=VIEW.filter(function(r){
+    return String(r.UCI||"")===uci && r.__date && isoDate(r.__date)===iso;
+  }).sort(function(a,b){return tlKey(a).localeCompare(tlKey(b));});
+  var r=hits[+n]||hits[0];
+  if(!r) return;
+  var idx=VIEW.indexOf(r);
+  if(idx>=0) page=Math.floor(idx/pageSize)+1;
+  selected=r;
+  setViewPage("details");
+  drawDetail(r);
+  drawTable();
+  var box=$("#sdDetail");
+  if(box && box.scrollIntoView) box.scrollIntoView({block:"nearest"});
+}
+
+/* Switching pages swaps which half of the card is hidden and relabels the
+   card header, since the heading and the note describe the page, not the
+   dashboard. */
+function setViewPage(v){
+  VIEWPAGE=(v==="timeline")?"timeline":"details";
+  var d=$("#sdPgDetails"), t=$("#sdPgTimeline");
+  if(d) d.hidden=(VIEWPAGE!=="details");
+  if(t) t.hidden=(VIEWPAGE!=="timeline");
+  $$("#sdTabs .tab").forEach(function(b){
+    var on=b.getAttribute("data-view")===VIEWPAGE;
+    b.classList.toggle("on",on);
+    b.setAttribute("aria-selected",on?"true":"false");
+  });
+  /* The two headings and the two notes are real markup, toggled rather
+     than rewritten, so their wording stays editable in sir_editor.html. */
+  [["#sdH1Details","#sdH1Timeline"],["#sdNoteDetails","#sdNoteTimeline"]].forEach(function(p){
+    var d=$(p[0]), t=$(p[1]);
+    if(d) d.hidden=(VIEWPAGE!=="details");
+    if(t) t.hidden=(VIEWPAGE!=="timeline");
+  });
+  if(VIEWPAGE==="timeline") drawTimeline();
+}
+
+function initTimeline(){
+  var tabs=$("#sdTabs");
+  if(tabs) tabs.addEventListener("click",function(e){
+    var b=e.target.closest?e.target.closest(".tab[data-view]"):null;
+    if(b) setViewPage(b.getAttribute("data-view"));
+  });
+  var host=$("#sdPgTimeline");
+  if(host) host.addEventListener("click",function(e){
+    var lab=e.target.closest?e.target.closest(".tllab[data-uci]"):null;
+    if(lab){ pickXf("uci",lab.getAttribute("data-uci")); return; }
+    var dot=e.target.closest?e.target.closest(".tldot"):null;
+    if(dot) tlOpenRecord(dot.getAttribute("data-uci"),dot.getAttribute("data-i"),dot.getAttribute("data-n"));
+  });
+  buildTlColors();
+}
+
 /* ---------------------- CSV export ----------------------
    Exports VIEW — everything the current filters select, not just the page
    on screen — with every SCHEMA column, not just the eleven in the grid.
@@ -902,6 +1189,7 @@ function initControls(){
 
   initClears();
   initXf();
+  initTimeline();
 
   var ds=ALL.map(function(r){return r.__date;}).filter(Boolean).sort(function(a,b){return a-b;});
   if(ds.length){

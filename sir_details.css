@@ -230,12 +230,87 @@
 #sir-details .detail-placeholder{color:var(--muted);text-align:center;padding:26px;border:1px dashed var(--line);border-radius:8px;background:var(--panel-2)}
 #sir-details .footnote{font-size:11px;color:var(--muted-2);margin:14px 0 0;border-top:1px dashed var(--line);padding-top:10px}
 
+/* page tabs — Details / Timeline. They swap which half of the card body
+   is hidden; the filters, the scope bar and the summary tiles are shared. */
+#sir-details .card-hd .tabs{margin-left:auto;display:flex;gap:4px;background:var(--panel-2);
+  border:1px solid var(--line);border-radius:8px;padding:3px}
+#sir-details .card-hd .tab{border:0;background:transparent;color:var(--muted);font:inherit;font-weight:700;
+  font-size:12px;padding:5px 14px;border-radius:6px;cursor:pointer}
+#sir-details .card-hd .tab:hover{color:var(--ink)}
+#sir-details .card-hd .tab.on{background:var(--org);color:#fff}
+#sir-details .card-hd .tab:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+#sir-details #sdPgDetails[hidden],#sir-details #sdPgTimeline[hidden]{display:none}
+#sir-details .card-hd h1[hidden],#sir-details .card-hd .note[hidden]{display:none}
+
+/* ---------------------------- timeline page ----------------------------
+   One lane per individual: a fixed label column, then a plot area whose
+   width is the whole selected date window. Dots are absolutely positioned
+   with `left:calc(13px + (100% - 26px) * p)` — the inset keeps a dot on
+   the first or last day of the window from being cut in half, and the same
+   expression positions the gridlines and axis labels so they stay in
+   register with the dots at any width.
+   ---------------------------------------------------------------------- */
+#sir-details .tl .tlhd{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+#sir-details .tl .tlhd h3{margin:0;font-size:13px;font-weight:700}
+#sir-details .tl .tlwin{margin-left:auto;font-size:11px;color:var(--muted);font-weight:600}
+
+#sir-details .tl .tllegend{display:flex;flex-wrap:wrap;gap:4px 12px;margin:10px 0 12px;
+  padding:8px 10px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px}
+#sir-details .tl .tlkey{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+#sir-details .tl .tlkey i{width:10px;height:10px;border-radius:50%;flex:0 0 auto;
+  box-shadow:0 0 0 1px rgba(255,255,255,.8) inset}
+
+#sir-details .tl .tllanes{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+#sir-details .tl .tlrow{display:grid;grid-template-columns:132px 1fr;align-items:stretch;
+  border-bottom:1px solid var(--line)}
+#sir-details .tl .tlrow:nth-child(even){background:var(--panel-2)}
+#sir-details .tl .tlrow.on{background:#e9f5f3}
+#sir-details .tl .tlrow.on .tllab .u{color:var(--org)}
+
+#sir-details .tl .tllab{display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+  border:0;border-right:1px solid var(--line);background:transparent;color:var(--ink);
+  font:inherit;padding:0 10px;cursor:pointer}
+#sir-details .tl .tllab:hover{background:#eef6f5}
+#sir-details .tl .tllab:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+#sir-details .tl .tllab .u{font-size:12px;font-weight:700}
+#sir-details .tl .tllab .n{margin-left:auto;font-size:11px;font-weight:700;color:var(--muted);
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1px 7px}
+#sir-details .tl .tllabspacer{border-right:1px solid var(--line)}
+
+#sir-details .tl .tlplot{position:relative;height:34px}
+#sir-details .tl .tlgl{position:absolute;top:0;bottom:0;width:1px;background:var(--line)}
+#sir-details .tl .tlbase{position:absolute;left:13px;right:13px;top:50%;height:1px;
+  background:var(--line);transform:translateY(-.5px)}
+
+#sir-details .tl .tldot{position:absolute;top:50%;width:11px;height:11px;padding:0;
+  border:1px solid rgba(255,255,255,.85);border-radius:50%;cursor:pointer;
+  transform:translate(-50%,-50%);transition:transform .08s ease}
+#sir-details .tl .tldot:hover{transform:translate(-50%,-50%) scale(1.45);z-index:3}
+#sir-details .tl .tldot:focus-visible{outline:2px solid var(--ink);outline-offset:1px;z-index:3}
+#sir-details .tl .tlmore{position:absolute;top:50%;transform:translate(-50%,-50%);
+  font-size:9px;font-weight:700;color:var(--muted);background:var(--panel);
+  border:1px solid var(--line);border-radius:8px;padding:0 4px;line-height:14px}
+#sir-details .tl .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);
+  white-space:nowrap}
+
+#sir-details .tl .tlaxisrow{border-bottom:0;background:var(--panel)!important}
+#sir-details .tl .tlaxis{height:22px}
+#sir-details .tl .tlt{position:absolute;top:3px;transform:translateX(-50%);font-size:10px;
+  color:var(--muted-2);white-space:nowrap;font-variant-numeric:tabular-nums}
+
+#sir-details .tl .tlfoot{font-size:11px;color:var(--muted-2);margin:10px 0 0}
+#sir-details .tl .tlempty{padding:28px 16px;text-align:center;color:var(--muted);
+  border:1px dashed var(--line);border-radius:8px}
+#sir-details .tl .tlempty strong{display:block;color:var(--ink);font-size:13px;margin-bottom:4px}
+
 @media (max-width:900px){
   #sir-details .layout{grid-template-columns:1fr}
   #sir-details .filters{position:static;max-height:none}
   #sir-details .xf{grid-template-columns:1fr}
   #sir-details .sects{grid-template-columns:1fr}
   #sir-details .summary .tile.wide{grid-column:span 2}
+  #sir-details .tl .tlrow{grid-template-columns:104px 1fr}
+  #sir-details .card-hd .tabs{margin-left:0}
 }
 @media (prefers-reduced-motion:reduce){
   #sir-details *{transition:none!important;animation:none!important}
