@@ -462,7 +462,7 @@ function fillSelect(sel){
      tagged with the wrong RC — would name a Regional Center the user is not
      entitled to browse. */
   var allow=(col==="RC")?allowedRcs():null;
-  if(allow) vals=vals.filter(function(v){ return allow.indexOf(v)!==-1; });
+  if(allow) vals=vals.filter(function(v){ return allow.list.indexOf(v)!==-1; });
 
   sel.innerHTML="";
   var all=document.createElement("option"); all.value=""; all.textContent="(All)"; sel.appendChild(all);
@@ -1390,18 +1390,36 @@ function rememberRcs(list){
   if(out.length) ssSet("rcs",out.join(","));
 }
 
-/* Seeing an RC's rows proves the account may have it, so the remembered set
-   is always safe to ADD to. Reading it as the whole permitted list is a
-   different claim, and only one kind of load supports it: no RC, no dates
-   and no truncation. A load narrowed any other way is silent about the RCs
-   it left out — a one-month window across every RC would otherwise strand
-   the user in whichever handful reported that month. */
+/* The permitted list, and how much the page can stake on it.
+
+   `firm` means it came from the account itself — the header hook or the URL
+   parameter — so it is the whole truth and the control can be locked to it.
+
+   Anything inferred from the data is a floor, not a ceiling: every RC whose
+   rows arrived is certainly permitted, but a load that was narrowed or
+   truncated is silent about the ones it left out. An inferred list therefore
+   narrows the choice without ever locking it, and **All Regional Centers**
+   always stays on offer, so a user covering several can widen the query and
+   grow what the page knows.
+
+   This used to demand an untruncated, completely unscoped load before it
+   would trust the data at all. With a 999-record cap that only ever happened
+   for the smallest Regional Centers, so everyone else fell through to the
+   full 21-RC list — which is the opposite of the intended default. */
 function allowedRcs(){
   var a=authRcs();
-  if(a) return a;
-  if(ssGet("rcsAll")!=="1") return null;
+  if(a) return {list:a, firm:true};
   var s=seenRcs();
-  return s.length?s:null;
+  return s.length ? {list:s, firm:false} : null;
+}
+
+/* Which of the three sources answered, for the console line at load. */
+function rcSource(){
+  var el=ROOT&&ROOT.querySelector("#sdAuthRc");
+  if(el && splitRcs(el.textContent).length) return "#sdAuthRc in the header";
+  if(splitRcs(urlParams()[SCOPE.param.authRc]).length) return "the "+SCOPE.param.authRc+" URL parameter";
+  if(seenRcs().length) return "the Regional Centers seen in the data so far";
+  return "nothing — every Regional Center is on offer";
 }
 
 /* SCOPE.rcs decides the ORDER. An allowed code that is missing from it is
@@ -1411,20 +1429,26 @@ function scopeRcList(){
   var allowed=allowedRcs();
   if(!allowed) return SCOPE.rcs.slice();
   var ok={};
-  allowed.forEach(function(rc){ ok[rc]=1; });
+  allowed.list.forEach(function(rc){ ok[rc]=1; });
   var out=SCOPE.rcs.filter(function(rc){ return ok[rc]; });
-  allowed.forEach(function(rc){ if(out.indexOf(rc)===-1) out.push(rc); });
+  allowed.list.forEach(function(rc){ if(out.indexOf(rc)===-1) out.push(rc); });
   return out;
 }
 
 function buildScopeRc(){
   var sel=ROOT.querySelector("#sc_rc");
   if(!sel) return;
+  var allowed=allowedRcs(), firm=!!(allowed&&allowed.firm);
   var list=scopeRcList(), sc=currentScope();
 
   /* One permitted Regional Center is not a choice: show it, select it and
-     lock the control, rather than presenting a dropdown of one. */
-  var lock=(list.length===1);
+     lock the control, rather than presenting a dropdown of one.
+
+     Only a firm list may lock, and only a firm list may drop **All Regional
+     Centers**. An inferred list of one usually means "one RC has been loaded
+     so far", not "one RC exists for this user", and locking on that would
+     shut a multi-RC user inside the first scope they happened to open. */
+  var lock=(firm && list.length===1);
   var opts=[];
   if(!lock) opts.push(SCOPE.allRc
     ? '<option value="">All Regional Centers</option>'
@@ -1435,14 +1459,19 @@ function buildScopeRc(){
   });
   sel.innerHTML=opts.join("");
   sel.disabled=lock;
-  sel.title=lock?("Your account has access to "+list[0]+" only"):"";
+  sel.title=lock
+    ? "Your account has access to "+list[0]+" only"
+    : (allowed ? "Regional Centers this account has access to" : "");
 
   /* An RC typed onto the URL that this account cannot see comes back with
-     no rows, which reads as a broken page unless it is named. */
+     no rows, which reads as a broken page unless it is named. Only a firm
+     list can say that; an inferred one merely has not seen it yet. */
   var msg=ROOT.querySelector("#sdScopeMsg");
-  if(msg && sc.rc && list.indexOf(sc.rc)===-1){
+  if(msg && firm && sc.rc && list.indexOf(sc.rc)===-1){
     msg.textContent="Your account does not have access to "+sc.rc+".";
   }
+
+  return {list:list, lock:lock};
 }
 
 /* ---------------- the scope slider's rolling domain ----------------
@@ -1510,11 +1539,17 @@ function afterLoadScope(){
     if(v && !seen[v]){ seen[v]=1; list.push(v); }
   });
   if(list.length) rememberRcs(list);
-  /* The one load that says something COMPLETE about access: nothing asked
-     for, nothing truncated. See allowedRcs(). */
-  if(list.length && !sc.rc && !sc.from && !sc.to && ALL.length!==LOAD_CAP) ssSet("rcsAll","1");
-  buildScopeRc();
+  var built=buildScopeRc();
   tuneScopeDates();
+
+  /* Said once, after the load, when the answer is final: a header hook that
+     silently failed to resolve looks exactly like one that is working until
+     you know which source the page actually used. Regional Center codes
+     only — nothing about any record goes to the console. */
+  if(window.console && built){
+    console.info("SIR details: Regional Center access came from "+rcSource()+
+                 " — offering "+built.list.join(", ")+(built.lock?" (locked)":""));
+  }
 }
 
 /* Wires the Regional Center picker and the date window. Returns false - it
