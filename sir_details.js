@@ -94,18 +94,27 @@ var LOAD_CAP = 999;
    tiles and every dropdown describe the CURRENT SCOPE, not the whole table.
    That is why the scope line under the header is always visible.
 
-   `rcs` has to be listed here — it cannot be derived from the data, because
-   a single-RC scope only ever contains that one RC. Replace this list with
-   your real Regional Center codes exactly as they appear in the RC column.
+   `rcs` is the FULL list of Regional Center codes, in the order they should
+   appear. It cannot be derived from the data, because a single-RC scope only
+   ever contains that one RC. What an individual user is allowed to pick from
+   it is worked out at run time — see "who the user may look at" below.
    ===================================================================== */
 var SCOPE = {
-  param : {rc:"RC", from:"From", to:"To"},  // URL / Caspio parameter names
+  /* URL / Caspio parameter names. `authRc` is not a filter: it is how a
+     deployment tells the page which RC the logged-in user belongs to. */
+  param : {rc:"RC", from:"From", to:"To", authRc:"AuthRC"},
   rcs   : ["ACRC", "CVRC", "ELARC","FDLRC", "FNRC", "GGRC", "HRC", "IRC", "KRC", "NBRC", "NLACRC","RCEB", "RCOC", "RCRC", "SARC", "SCLARC", "SDRC", "SGPRC", "TCRC", "VMRC", "WRC"],
   allRc : true,        // false = force a single RC, no "All" option
 
-  /* Domain of the scope date slider. It cannot be read from the data —
-     the slider has to offer dates that are NOT in the current slice, since
-     its whole job is to fetch a different one. Set `max` to "" for today. */
+  /* How many months of the scope date slider, counting the newest month in
+     the data as the last of them: 25 covers the current month and two
+     years behind it. The domain cannot be read from the rows on screen —
+     see scopeDomain(). */
+  months : 25,
+
+  /* Absolute guard rails for that rolling domain, not the domain itself.
+     `minDate` is a floor the window never runs past even if the data is
+     older than the table; `maxDate` a ceiling, "" for today. */
   minDate: "2019-01-01",
   maxDate: ""
 };
@@ -445,6 +454,16 @@ function fillSelect(sel){
     tokens(r,col).forEach(function(v){if(!seen[v]){seen[v]=1;vals.push(v);}});
   });
   vals.sort(function(a,b){return a.localeCompare(b,undefined,{numeric:true});});
+
+  /* Every dropdown is built from the rows that actually loaded, so under
+     row-level security it can only ever offer values this account received.
+     The RC column is checked against the permitted list anyway: it is the
+     one field where a stray value — a mis-set security rule, a record
+     tagged with the wrong RC — would name a Regional Center the user is not
+     entitled to browse. */
+  var allow=(col==="RC")?allowedRcs():null;
+  if(allow) vals=vals.filter(function(v){ return allow.indexOf(v)!==-1; });
+
   sel.innerHTML="";
   var all=document.createElement("option"); all.value=""; all.textContent="(All)"; sel.appendChild(all);
   vals.forEach(function(v){
@@ -1225,6 +1244,7 @@ function drawLoadWarn(n){
 
 function start(rawRows){
   ALL=(rawRows||[]).map(normalize);
+  afterLoadScope();      /* before the sidebar: it can narrow the RC filter */
   initControls();
   applyFilters();
   drawDetail(null);
@@ -1313,31 +1333,205 @@ function drawScopeLine(n){
   el.textContent="Showing  "+bits.join("   ·   ");
 }
 
+/* ---------------- who the user may look at ----------------
+   Caspio's row-level security is what actually stops a user RECEIVING
+   another Regional Center's records. All this does is stop the scope bar
+   OFFERING them, so nobody loads a deliberately empty page and reads it as
+   a broken dashboard. It is a courtesy, not an access control: the URL is
+   editable, and enforcement stays where it belongs, in Caspio.
+
+   Three sources, best first:
+
+   1. `#sdAuthRc` in the header, which Caspio fills with the logged-in
+      user's authentication field. This is the reliable one — it is written
+      server-side and cannot be edited from the URL. CASPIO_SETUP.md has
+      the wiring.
+   2. the `AuthRC` parameter on the page URL, for deployments that pass the
+      value that way instead.
+   3. failing both, what the data itself gives away: under row-level
+      security an unscoped load can only contain RCs this user is allowed
+      to see. That needs no wiring at all, but it is only a COMPLETE list
+      if the load was not truncated — so it is remembered as a set that
+      only ever grows, and is never used to take an RC away.
+
+   Nothing known from any of the three = no restriction; offer SCOPE.rcs.
+   -------------------------------------------------------------------- */
+
+/* Accepts one code or a delimited list, and ignores an authentication-field
+   token that Caspio left unresolved (those still contain "[@"). */
+function splitRcs(raw){
+  return String(raw==null?"":raw).split(/[,;|\/]/)
+    .map(function(s){ return s.trim(); })
+    .filter(function(s){ return s!=="" && s.indexOf("[@")===-1; });
+}
+
+function authRcs(){
+  var el=ROOT&&ROOT.querySelector("#sdAuthRc");
+  var fromHeader=el?splitRcs(el.textContent):[];
+  if(fromHeader.length) return fromHeader;
+  var fromUrl=splitRcs(urlParams()[SCOPE.param.authRc]);
+  return fromUrl.length?fromUrl:null;
+}
+
+/* Remembered per DataPage, for this browser tab only. Both values are
+   aggregates — a list of Regional Center codes, and a YYYY-MM month — so
+   nothing about any individual is written to the browser. Storage can be
+   blocked outright in an embedded page, hence the try/catch on both. */
+var SS="sdSir:"+location.pathname+":";
+function ssGet(k){ try{ return window.sessionStorage.getItem(SS+k)||""; }catch(e){ return ""; } }
+function ssSet(k,v){ try{ window.sessionStorage.setItem(SS+k,v); }catch(e){} }
+
+function seenRcs(){ return splitRcs(ssGet("rcs")); }
+function rememberRcs(list){
+  var seen={}, out=[];
+  seenRcs().concat(list).forEach(function(rc){
+    if(rc && !seen[rc]){ seen[rc]=1; out.push(rc); }
+  });
+  if(out.length) ssSet("rcs",out.join(","));
+}
+
+/* Seeing an RC's rows proves the account may have it, so the remembered set
+   is always safe to ADD to. Reading it as the whole permitted list is a
+   different claim, and only one kind of load supports it: no RC, no dates
+   and no truncation. A load narrowed any other way is silent about the RCs
+   it left out — a one-month window across every RC would otherwise strand
+   the user in whichever handful reported that month. */
+function allowedRcs(){
+  var a=authRcs();
+  if(a) return a;
+  if(ssGet("rcsAll")!=="1") return null;
+  var s=seenRcs();
+  return s.length?s:null;
+}
+
+/* SCOPE.rcs decides the ORDER. An allowed code that is missing from it is
+   appended rather than dropped, so a Regional Center nobody remembered to
+   add to the list cannot lock its own users out. */
+function scopeRcList(){
+  var allowed=allowedRcs();
+  if(!allowed) return SCOPE.rcs.slice();
+  var ok={};
+  allowed.forEach(function(rc){ ok[rc]=1; });
+  var out=SCOPE.rcs.filter(function(rc){ return ok[rc]; });
+  allowed.forEach(function(rc){ if(out.indexOf(rc)===-1) out.push(rc); });
+  return out;
+}
+
+function buildScopeRc(){
+  var sel=ROOT.querySelector("#sc_rc");
+  if(!sel) return;
+  var list=scopeRcList(), sc=currentScope();
+
+  /* One permitted Regional Center is not a choice: show it, select it and
+     lock the control, rather than presenting a dropdown of one. */
+  var lock=(list.length===1);
+  var opts=[];
+  if(!lock) opts.push(SCOPE.allRc
+    ? '<option value="">All Regional Centers</option>'
+    : '<option value="">Choose a Regional Center…</option>');
+  var want=lock?list[0]:sc.rc;
+  list.forEach(function(rc){
+    opts.push('<option value="'+esc(rc)+'"'+(rc===want?" selected":"")+">"+esc(rc)+"</option>");
+  });
+  sel.innerHTML=opts.join("");
+  sel.disabled=lock;
+  sel.title=lock?("Your account has access to "+list[0]+" only"):"";
+
+  /* An RC typed onto the URL that this account cannot see comes back with
+     no rows, which reads as a broken page unless it is named. */
+  var msg=ROOT.querySelector("#sdScopeMsg");
+  if(msg && sc.rc && list.indexOf(sc.rc)===-1){
+    msg.textContent="Your account does not have access to "+sc.rc+".";
+  }
+}
+
+/* ---------------- the scope slider's rolling domain ----------------
+   Ends at the last day of the newest month the data reaches and runs
+   SCOPE.months months back from there, so the handles cover the window
+   people actually report on instead of every year the table holds.
+
+   It cannot be taken from the rows on screen alone. The whole job of this
+   slider is to ask for a slice that is NOT loaded, so a narrow scope would
+   otherwise shrink the domain around itself and there would be no way back
+   out. The newest month seen this session is remembered instead, and the
+   domain is pinned to that.
+   -------------------------------------------------------------------- */
+function monthKey(d){ return d.getUTCFullYear()+"-"+pad2(d.getUTCMonth()+1); }
+
+function anchorMonth(){
+  var best=ssGet("month");
+  if(!/^\d{4}-\d{2}$/.test(best)) best="";
+  var ts=ALL.map(function(r){ return r.__date?r.__date.getTime():0; })
+            .filter(function(t){ return t>0; });
+  if(ts.length){
+    var k=monthKey(new Date(Math.max.apply(null,ts)));
+    if(k>best) best=k;                       /* YYYY-MM sorts as a string */
+  }
+  if(!best){
+    var cap=SCOPE.maxDate?parseDate(SCOPE.maxDate):null;
+    best=monthKey(cap||new Date());
+  }
+  ssSet("month",best);
+  var p=best.split("-");
+  return {y:+p[0], m:+p[1]-1};
+}
+
+function scopeDomain(){
+  var a=anchorMonth(), n=Math.max(1,SCOPE.months|0);
+  var lo=new Date(Date.UTC(a.y, a.m-(n-1), 1));
+  var hi=new Date(Date.UTC(a.y, a.m+1, 0));  /* day 0 of next = last of this */
+  var floor=parseDate(SCOPE.minDate);
+  if(floor && lo<floor) lo=floor;
+  var cap=SCOPE.maxDate?parseDate(SCOPE.maxDate):null;
+  if(cap && hi>cap) hi=cap;
+  return {min:isoDate(lo), max:isoDate(hi)};
+}
+
+function tuneScopeDates(){
+  var fromEl=ROOT.querySelector("#sc_from"), toEl=ROOT.querySelector("#sc_to");
+  if(!fromEl||!toEl) return;
+  var dom=scopeDomain();
+  fromEl.min=toEl.min=dom.min;
+  fromEl.max=toEl.max=dom.max;
+  /* Rebuilding the slider re-reads the two date boxes, which own the value,
+     so retuning the domain never disturbs what the user has typed. */
+  dslScope=makeDateSlider(ROOT.querySelector("#sc_dsl"),
+    {min:dom.min, max:dom.max, fromEl:fromEl, toEl:toEl});
+}
+
+/* What the load just taught us about the user: which Regional Centers their
+   account can reach, and how recent the data is. Both belong to the scope
+   bar, which is built before either is known, so it is corrected here. */
+function afterLoadScope(){
+  if(!ROOT.querySelector("#sdScope")) return;
+  var sc=currentScope(), seen={}, list=[];
+  ALL.forEach(function(r){
+    var v=String(r.RC||"").trim();
+    if(v && !seen[v]){ seen[v]=1; list.push(v); }
+  });
+  if(list.length) rememberRcs(list);
+  /* The one load that says something COMPLETE about access: nothing asked
+     for, nothing truncated. See allowedRcs(). */
+  if(list.length && !sc.rc && !sc.from && !sc.to && ALL.length!==LOAD_CAP) ssSet("rcsAll","1");
+  buildScopeRc();
+  tuneScopeDates();
+}
+
 /* Wires the Regional Center picker and the date window. Returns false - it
    never navigates on its own; only the "Load records" button does. */
 function initScope(){
   if(!ROOT.querySelector("#sdScope")) return false;
   var sc=currentScope();
-  var sel=ROOT.querySelector("#sc_rc");
-  var opts=[SCOPE.allRc
-    ? '<option value="">All Regional Centers</option>'
-    : '<option value="">Choose a Regional Center…</option>'];
-  SCOPE.rcs.forEach(function(rc){
-    opts.push('<option value="'+rc+'"'+(rc===sc.rc?" selected":"")+">"+rc+"</option>");
-  });
-  sel.innerHTML=opts.join("");
+  buildScopeRc();
 
   var fromEl=ROOT.querySelector("#sc_from"), toEl=ROOT.querySelector("#sc_to");
   if(fromEl) fromEl.value=sc.from;
   if(toEl)   toEl.value=sc.to;
 
-  /* The scope slider's domain comes from SCOPE, not from the data: it has
-     to be able to ask for dates the current slice does not contain. */
   if(fromEl && toEl){
-    var hi=SCOPE.maxDate || isoDate(new Date());
-    fromEl.min=toEl.min=SCOPE.minDate; fromEl.max=toEl.max=hi;
-    dslScope=makeDateSlider(ROOT.querySelector("#sc_dsl"),
-      {min:SCOPE.minDate, max:hi, fromEl:fromEl, toEl:toEl});
+    tuneScopeDates();
+    /* Registered once, and read through the `dslScope` variable, so it
+       still finds the slider after afterLoadScope() rebuilds it. */
     [fromEl,toEl].forEach(function(el){
       el.addEventListener("change",function(){ if(dslScope) dslScope.sync(); });
     });
@@ -1345,11 +1539,15 @@ function initScope(){
 
   ROOT.querySelector("#sc_load").addEventListener("click",function(){
     var msg=ROOT.querySelector("#sdScopeMsg");
+    /* Read the control now rather than closing over it: buildScopeRc()
+       replaces its options after the load, and may have locked it. */
+    var sel=ROOT.querySelector("#sc_rc");
+    var rc=sel?sel.value:"";
     var from=fromEl?fromEl.value:"", to=toEl?toEl.value:"";
-    if(!SCOPE.allRc && !sel.value){ msg.textContent="Choose a Regional Center."; return; }
+    if(!SCOPE.allRc && !rc){ msg.textContent="Choose a Regional Center."; return; }
     if(from && to && from>to){ msg.textContent="The From date is after the To date."; return; }
     msg.textContent="";
-    location.assign(scopeUrl({rc:sel.value, from:from, to:to}));
+    location.assign(scopeUrl({rc:rc, from:from, to:to}));
   });
 
   /* Enter anywhere in the scope bar loads, same as the button. */
