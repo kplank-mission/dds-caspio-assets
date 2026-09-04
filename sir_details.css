@@ -46,6 +46,11 @@
 #sir-details .scope .sdates .dslhost{grid-column:1/-1}
 #sir-details .scope label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#9fb0c0;font-weight:600}
 #sir-details .scope select,#sir-details .scope input{padding:6px 8px;border:1px solid #3a4757;border-radius:7px;font:inherit;background:#111820;color:#fff;min-width:150px}
+/* Incident and residence type values run long ("Suspected Abuse or
+   Exploitation"), and an unbounded select would size to its widest option
+   and shove the date boxes onto their own row. The native control ellipses
+   what it cannot show, and the full text stays available in the open list. */
+#sir-details .scope select{max-width:230px}
 #sir-details .scope select:disabled{opacity:.9;cursor:default;border-style:dashed;border-color:#4a5a6d}
 #sir-details .scope select:focus,#sir-details .scope input:focus{outline:2px solid #4fd1c5;border-color:#4fd1c5}
 #sir-details .scope #sc_load{padding:7px 14px;border:1px solid var(--org);border-radius:7px;background:var(--org);color:#fff;font:inherit;font-weight:700;cursor:pointer}

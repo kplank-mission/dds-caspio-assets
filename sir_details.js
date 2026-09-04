@@ -124,11 +124,56 @@ var SCOPE = {
      never redirect. */
   openMonths : 3,
 
+  /* How far the table is expected to lag real time, in months. This is a
+     STAND-IN, used only when the page has no idea how recent the data is —
+     the first page view of a browser tab, where nothing has loaded yet and
+     the calendar is the only clue. Once any load has happened the real
+     newest month is known and remembered, and this is ignored: the window
+     is measured from the data, not from today. 1 = the table is a month
+     behind, so "the last three months" means the three months ending with
+     last month. */
+  lagMonths : 1,
+
   /* Absolute guard rails for that rolling domain, not the domain itself.
      `minDate` is a floor the window never runs past even if the data is
      older than the table; `maxDate` a ceiling, "" for today. */
   minDate: "2019-01-01",
-  maxDate: ""
+  maxDate: "",
+
+  /* ------------------------------------------------------------------
+     Extra server-side slicers in the scope bar. Like the Regional Center
+     picker, and unlike everything in the sidebar, these change what CASPIO
+     SENDS, so they are the tool for getting a load under LOAD_CAP rather
+     than for exploring rows already in the browser.
+
+     Adding one here builds the control, wires it and puts it on the URL.
+     What it does NOT do is teach the DataPage to honour it: every entry
+     needs a matching filtering criterion on the Caspio side, receiving
+     `param` as an external parameter. CASPIO_SETUP.md has the steps, and
+     `multi` is the part that is easy to get wrong.
+
+       id     the control's element id, which must exist in the header
+       col    the schema column, used to learn real values from loaded rows
+       param  the URL / Caspio external parameter name
+       label  the control's on-screen label
+       multi  the column holds a delimited list, so Caspio must match with
+              "Contains", not "Equal" — one record can be several types
+       seed   values offered before this tab has loaded anything. A
+              STARTING POINT ONLY: values learned from real rows are added
+              to it, and a seed that does not match the field exactly will
+              match no records. Trim it to your own table.
+     ------------------------------------------------------------------ */
+  slicers: [
+    {id:"sc_type", col:"IncidentTypes", param:"IncidentType",
+     label:"Incident type", multi:true,
+     seed:["Unplanned Medical Hospitalization","Injury","Death","Missing Person",
+           "Suspected Abuse or Exploitation","Law Enforcement Contact",
+           "Victim of Crime","Restraint","Medication Error"]},
+    {id:"sc_res", col:"ResidenceTypeinCMFPOS", param:"ResidenceType",
+     label:"Residence type",
+     seed:["SLS","ILS","FHA","CCF Level 2","CCF Level 3","CCF Level 4i",
+           "ICF/DD-H","ICF/DD-N","Home of Parent/Guardian","SNF"]}
+  ]
 };
 
 /* =====================================================================
@@ -1308,23 +1353,39 @@ function urlParams(){
   return out;
 }
 
-/* What the URL asks for. Any of the three may be blank = no narrowing. */
+function slicers(){ return SCOPE.slicers||[]; }
+
+/* What the URL asks for. Every part may be blank = no narrowing. `sl` is
+   the extra slicers, keyed by their `param` so the URL name and the value
+   travel together. */
 function currentScope(){
-  var p=urlParams();
+  var p=urlParams(), sl={};
+  slicers().forEach(function(s){ sl[s.param]=(p[s.param]||"").trim(); });
   return {
     rc  : (p[SCOPE.param.rc]||"").trim(),
     from: usToIso(p[SCOPE.param.from]),
-    to  : usToIso(p[SCOPE.param.to])
+    to  : usToIso(p[SCOPE.param.to]),
+    sl  : sl
   };
 }
 
 /* Keep any unrelated parameters already on the URL. An empty RC is dropped
-   rather than sent blank, so Caspio's criterion matches every RC. */
+   rather than sent blank, so Caspio's criterion matches every RC.
+
+   The slicers are only rewritten when `sl` is supplied. Omitting it leaves
+   whatever the URL already carried, which is what a caller that is changing
+   only the dates — the opening redirect, or the retreat from an empty
+   window — wants: widen the months, keep the slice. Passing `sl` is how the
+   Load button clears a slicer, since a blank value has to actually erase
+   the parameter rather than fall through to the old one. */
 function scopeUrl(sc){
   var p=urlParams();
   p[SCOPE.param.rc]   = sc.rc||"";
   p[SCOPE.param.from] = isoToUs(sc.from);
   p[SCOPE.param.to]   = isoToUs(sc.to);
+  if(sc.sl){
+    slicers().forEach(function(s){ p[s.param]=sc.sl[s.param]||""; });
+  }
   p.sdscope="1";
   var parts=[];
   for(var k in p){
@@ -1343,6 +1404,13 @@ function drawScopeLine(n){
   else if(sc.from)       bits.push("on or after "+isoToUs(sc.from));
   else if(sc.to)         bits.push("on or before "+isoToUs(sc.to));
   else                   bits.push("all dates");
+  /* Named, not just shown as "filtered": this line is the only thing on the
+     page that says what the tiles and the dropdowns are describing, so a
+     server-side slice left set from an earlier load has to be visible here
+     or every count below it is quietly wrong. */
+  slicers().forEach(function(s){
+    if(sc.sl[s.param]) bits.push(s.label.toLowerCase()+": "+sc.sl[s.param]);
+  });
   bits.push(n==null ? "loading…"
                     : n.toLocaleString()+" record"+(n===1?"":"s")+" loaded");
   el.textContent="Showing  "+bits.join("   ·   ");
@@ -1403,6 +1471,136 @@ function rememberRcs(list){
     if(rc && !seen[rc]){ seen[rc]=1; out.push(rc); }
   });
   if(out.length) ssSet("rcs",out.join(","));
+}
+
+/* ---------------- what the extra scope slicers may offer ----------------
+   The same problem the Regional Center picker has, for the same reason: a
+   scope slicer has to offer values that are NOT in the loaded rows, or
+   picking one could never widen the query. So the list is a union of two
+   sources, neither of which is trusted alone.
+
+   `seed` is what the config guesses. It costs nothing when right and
+   matches no records when wrong, because Caspio compares against the real
+   field. Values learned from rows that actually arrived are therefore
+   worth more, and they are remembered per tab as a set that only grows —
+   exactly like seenRcs(), and for the same reason: a narrowed load is
+   silent about the values it filtered out, so a learned list is a floor
+   and never a ceiling.
+
+   Stored newline-separated rather than through splitRcs(), which splits on
+   commas and slashes — both of which appear inside these values
+   ("ICF/DD-H"), and one of which is the delimiter INSIDE the multi-value
+   column.
+   ---------------------------------------------------------------------- */
+function slicerStoreKey(s){ return "sl:"+s.param; }
+
+function splitLines(raw){
+  return String(raw==null?"":raw).split("\n")
+    .map(function(v){ return v.trim(); })
+    .filter(function(v){ return v!==""; });
+}
+
+/* Every distinct value of this slicer's column in the rows on screen. A
+   `multi` column is split first, so one record contributing three types
+   offers three choices rather than the comma-joined string it stored. */
+function slicerValuesInData(s){
+  var seen={}, out=[];
+  ALL.forEach(function(r){
+    var vals = s.multi ? tokens(r,s.col) : [String(r[s.col]==null?"":r[s.col]).trim()];
+    vals.forEach(function(v){
+      if(v && !seen[v]){ seen[v]=1; out.push(v); }
+    });
+  });
+  return out;
+}
+
+function rememberSlicerValues(s,list){
+  var seen={}, out=[];
+  splitLines(ssGet(slicerStoreKey(s))).concat(list).forEach(function(v){
+    if(v && !seen[v]){ seen[v]=1; out.push(v); }
+  });
+  if(out.length) ssSet(slicerStoreKey(s),out.join("\n"));
+}
+
+/* Seed plus everything learned, alphabetical — a list whose order shifted
+   as the page learned new values would move the options under the cursor.
+   Whatever the URL currently asks for is included even if neither source
+   knows it, so a hand-edited or bookmarked URL still shows its own value
+   selected instead of silently reading as "All". */
+function slicerOptions(s,want){
+  var seen={}, out=[];
+  (s.seed||[]).concat(splitLines(ssGet(slicerStoreKey(s)))).forEach(function(v){
+    if(v && !seen[v]){ seen[v]=1; out.push(v); }
+  });
+  out.sort(function(a,b){ return a.localeCompare(b); });
+  if(want && !seen[want]) out.unshift(want);
+  return out;
+}
+
+function buildScopeSlicers(){
+  var sc=currentScope();
+  slicers().forEach(function(s){
+    var sel=ROOT.querySelector("#"+s.id);
+    if(!sel) return;
+    var want=sc.sl[s.param];
+    var opts=['<option value="">All '+esc(s.label.toLowerCase())+'s</option>'];
+    slicerOptions(s,want).forEach(function(v){
+      opts.push('<option value="'+esc(v)+'"'+(v===want?" selected":"")+">"+esc(v)+"</option>");
+    });
+    sel.innerHTML=opts.join("");
+    /* Said on the control itself, because the difference decides whether
+       the Caspio criterion must be Contains or Equal, and a page that looks
+       right with the wrong one returns nothing. */
+    sel.title=s.multi
+      ? "Loads records that include this "+s.label.toLowerCase()+", which may have others too"
+      : "Loads records with this "+s.label.toLowerCase();
+  });
+}
+
+/* Does this row satisfy the slicer? Same semantics the sidebar uses: a
+   `multi` column matches when the value is one of its tokens, anything
+   else when it matches outright. */
+function rowMatchesSlicer(s,r,want){
+  if(!want) return true;
+  return s.multi ? tokens(r,s.col).indexOf(want)!==-1
+                 : String(r[s.col]==null?"":r[s.col]).trim()===want;
+}
+
+/* A slicer the DataPage never learned about is the quiet failure this whole
+   feature invites: the control works, the URL carries the value, the scope
+   line reports the slice — and Caspio, having no criterion for the
+   parameter, sends everything anyway. The page then looks like it is showing
+   one incident type while displaying all of them.
+
+   Rows that contradict the slice are proof of it, so say so. Nothing else
+   can distinguish this from a working slicer, and it is the difference
+   between "wire up the criterion" and hours spent doubting the data. */
+function warnUnwiredSlicers(){
+  var sc=currentScope(), bad=[];
+  slicers().forEach(function(s){
+    var want=sc.sl[s.param];
+    if(!want) return;
+    var contradicted=ALL.some(function(r){ return !rowMatchesSlicer(s,r,want); });
+    if(contradicted) bad.push(s);
+  });
+  if(!bad.length) return;
+  var msg=ROOT.querySelector("#sdScopeMsg");
+  if(!msg) return;
+  var names=bad.map(function(s){ return s.label.toLowerCase()+" ("+s.param+")"; });
+  msg.textContent=(msg.textContent?msg.textContent+" ":"")+
+    "Caspio ignored the "+names.join(" and ")+" scope"+(bad.length>1?"s":"")+
+    " — records that do not match came back. The DataPage needs a filtering "+
+    "criterion on that parameter; see CASPIO_SETUP.md.";
+}
+
+/* What the controls are asking for right now, ready for scopeUrl(). */
+function readScopeSlicers(){
+  var out={};
+  slicers().forEach(function(s){
+    var sel=ROOT.querySelector("#"+s.id);
+    out[s.param]=sel?sel.value:"";
+  });
+  return out;
 }
 
 /* The permitted list, and how much the page can stake on it.
@@ -1511,9 +1709,15 @@ function anchorMonth(){
     var k=monthKey(new Date(Math.max.apply(null,ts)));
     if(k>best) best=k;                       /* YYYY-MM sorts as a string */
   }
+  /* Nothing loaded and nothing remembered: fall back to the calendar, less
+     the expected reporting lag, so a cold first view opens on months that
+     actually hold records instead of on the empty end of the table. Every
+     later view in this tab uses the data's own newest month, above. */
   if(!best){
     var cap=SCOPE.maxDate?parseDate(SCOPE.maxDate):null;
-    best=monthKey(cap||new Date());
+    var now=cap||new Date();
+    best=monthKey(new Date(Date.UTC(now.getUTCFullYear(),
+                                   now.getUTCMonth()-(SCOPE.lagMonths|0), 1)));
   }
   ssSet("month",best);
   var p=best.split("-");
@@ -1604,6 +1808,15 @@ function afterLoadScope(){
   });
   if(list.length) rememberRcs(list);
   var built=buildScopeRc();
+
+  /* Learn before rebuilding: the load just showed this tab real values for
+     every slicer column, and they are better than any seed. Rebuilding is
+     safe because the control is re-selected from the URL, which is what
+     actually holds the current slice — not the control. */
+  slicers().forEach(function(s){ rememberSlicerValues(s,slicerValuesInData(s)); });
+  buildScopeSlicers();
+  warnUnwiredSlicers();
+
   tuneScopeDates();
 
   /* Said once, after the load, when the answer is final: a header hook that
@@ -1641,6 +1854,7 @@ function initScope(){
 
   var sc=currentScope();
   buildScopeRc();
+  buildScopeSlicers();
 
   var fromEl=ROOT.querySelector("#sc_from"), toEl=ROOT.querySelector("#sc_to");
   if(fromEl) fromEl.value=sc.from;
@@ -1665,7 +1879,10 @@ function initScope(){
     if(!SCOPE.allRc && !rc){ msg.textContent="Choose a Regional Center."; return; }
     if(from && to && from>to){ msg.textContent="The From date is after the To date."; return; }
     msg.textContent="";
-    location.assign(scopeUrl({rc:rc, from:from, to:to}));
+    /* `sl` is passed even when every slicer is blank: that is how clearing
+       one erases its parameter instead of falling through to the value the
+       previous load left on the URL. */
+    location.assign(scopeUrl({rc:rc, from:from, to:to, sl:readScopeSlicers()}));
   });
 
   /* Enter anywhere in the scope bar loads, same as the button. */
