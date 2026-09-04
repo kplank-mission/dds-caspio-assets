@@ -158,21 +158,36 @@ var SCOPE = {
        label  the control's on-screen label
        multi  the column holds a delimited list, so Caspio must match with
               "Contains", not "Equal" — one record can be several types
-       seed   values offered before this tab has loaded anything. A
-              STARTING POINT ONLY: values learned from real rows are added
-              to it, and a seed that does not match the field exactly will
-              match no records. Trim it to your own table.
+       seed   the values to offer. Must be the LIVE TABLE's distinct
+              values — see the note.
+
+     On seeds. A seed is only as good as where it came from. Caspio
+     compares the value against the real field, so one that is close but
+     not exact looks authoritative in the dropdown and returns nothing when
+     picked — worse than not offering it at all. The lists below were taken
+     from the Caspio table itself. Do not extend them from
+     caspio_data_sample.xlsx, which holds a single record padded out with
+     blank rows to show the real table's height: every value list ever
+     written from that file, the demo generator's included, was invented.
+
+     Values seen in loaded rows are added to the seed at run time, so the
+     dropdown self-heals if the table gains a value this list does not have
+     — but only for records that have actually arrived. Keeping the seed
+     current is still what makes a rare value selectable BEFORE any load
+     contains it, which is the whole point of a server-side slicer.
      ------------------------------------------------------------------ */
   slicers: [
     {id:"sc_type", col:"IncidentTypes", param:"IncidentType",
      label:"Incident type", multi:true,
-     seed:["Unplanned Medical Hospitalization","Injury","Death","Missing Person",
-           "Suspected Abuse or Exploitation","Law Enforcement Contact",
-           "Victim of Crime","Restraint","Medication Error"]},
+     seed:["All Non-Mortality","Emergency Room Visit - 5+ Days","Injury",
+           "Medication Error","Missing Person","Mortality","Suspected Abuse",
+           "Suspected Neglect","Unplanned Medical Hospitalization",
+           "Victim of Crime"]},
     {id:"sc_res", col:"ResidenceTypeinCMFPOS", param:"ResidenceType",
      label:"Residence type",
-     seed:["SLS","ILS","FHA","CCF Level 2","CCF Level 3","CCF Level 4i",
-           "ICF/DD-H","ICF/DD-N","Home of Parent/Guardian","SNF"]}
+     seed:["ARFPSHN","CCF","EBSH/CCH","FHA","Foster care",
+           "Home of parent/family/guardian","ICF","NF","Other",
+           "Own home: independent","SLS","SRF"]}
   ]
 };
 
@@ -1474,25 +1489,33 @@ function rememberRcs(list){
 }
 
 /* ---------------- what the extra scope slicers may offer ----------------
-   The same problem the Regional Center picker has, for the same reason: a
-   scope slicer has to offer values that are NOT in the loaded rows, or
-   picking one could never widen the query. So the list is a union of two
-   sources, neither of which is trusted alone.
+   Two sources, unioned.
 
-   `seed` is what the config guesses. It costs nothing when right and
-   matches no records when wrong, because Caspio compares against the real
-   field. Values learned from rows that actually arrived are therefore
-   worth more, and they are remembered per tab as a set that only grows —
-   exactly like seenRcs(), and for the same reason: a narrowed load is
-   silent about the values it filtered out, so a learned list is a floor
-   and never a ceiling.
+   The `seed` in SCOPE.slicers carries the live table's distinct values, and
+   it is what a scope slicer needs to do its job at all: the job is to ask
+   Caspio for rows that are NOT loaded, so a list built only from loaded
+   rows could never reach a value the current scope excludes. The Regional
+   Center picker is hand-written for the same reason.
+
+   Values seen in rows that actually arrived are added to it, remembered per
+   tab as a set that only grows — exactly like seenRcs(), and for the same
+   reason: a narrowed load is silent about the values it filtered out, so a
+   learned list is a floor and never a ceiling. Learning is what keeps the
+   dropdown honest when the table gains a value the seed does not have; the
+   seed is what makes a value selectable before any load contains it.
+   Neither replaces the other.
 
    Stored newline-separated rather than through splitRcs(), which splits on
    commas and slashes — both of which appear inside these values
    ("ICF/DD-H"), and one of which is the delimiter INSIDE the multi-value
    column.
    ---------------------------------------------------------------------- */
-function slicerStoreKey(s){ return "sl:"+s.param; }
+/* Versioned, so the invented seed values an earlier build remembered are
+   abandoned rather than inherited. sessionStorage would clear them when the
+   tab closed, but a tab left open all day would keep offering values that
+   match no records. Bump the number again if a future change ever makes the
+   remembered values wrong. */
+function slicerStoreKey(s){ return "sl2:"+s.param; }
 
 function splitLines(raw){
   return String(raw==null?"":raw).split("\n")
