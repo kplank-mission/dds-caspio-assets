@@ -134,6 +134,23 @@ var SCOPE = {
      last month. */
   lagMonths : 1,
 
+  /* Send the page's own scope parameters even when they are empty, as
+     `From=&To=`, instead of leaving them off the URL.
+
+     This looks like a detail and is not. Dropping an empty parameter
+     assumes Caspio reads "parameter absent" as "criterion not applied",
+     and it does not: a criterion that received a value on an earlier load
+     keeps it when the parameter stops arriving. Clearing the date window
+     therefore reloaded with the PREVIOUS window still applied — the
+     handles said all dates, the records disagreed, and nothing on the page
+     could tell you why. An empty value is unambiguous where an absent one
+     is not.
+
+     Set false to go back to dropping them, which is worth trying only if a
+     specific Caspio criterion turns out to mishandle a blank — that would
+     show up as a load returning nothing at all rather than everything. */
+  sendBlankParams : true,
+
   /* Absolute guard rails for that rolling domain, not the domain itself.
      `minDate` is a floor the window never runs past even if the data is
      older than the table; `maxDate` a ceiling, "" for today. */
@@ -1384,8 +1401,13 @@ function currentScope(){
   };
 }
 
-/* Keep any unrelated parameters already on the URL. An empty RC is dropped
-   rather than sent blank, so Caspio's criterion matches every RC.
+/* Keep any unrelated parameters already on the URL.
+
+   The parameters this page owns are always written, and when
+   SCOPE.sendBlankParams is on they are written even when empty — see the
+   note on that setting. Only parameters the page knows nothing about are
+   dropped for being empty, because for those there is no criterion of ours
+   to leave stranded.
 
    The slicers are only rewritten when `sl` is supplied. Omitting it leaves
    whatever the URL already carried, which is what a caller that is changing
@@ -1394,17 +1416,22 @@ function currentScope(){
    Load button clears a slicer, since a blank value has to actually erase
    the parameter rather than fall through to the old one. */
 function scopeUrl(sc){
-  var p=urlParams();
-  p[SCOPE.param.rc]   = sc.rc||"";
-  p[SCOPE.param.from] = isoToUs(sc.from);
-  p[SCOPE.param.to]   = isoToUs(sc.to);
+  var p=urlParams(), own={};
+  function set(k,v){ p[k]=v; own[k]=1; }
+
+  set(SCOPE.param.rc,   sc.rc||"");
+  set(SCOPE.param.from, isoToUs(sc.from));
+  set(SCOPE.param.to,   isoToUs(sc.to));
   if(sc.sl){
-    slicers().forEach(function(s){ p[s.param]=sc.sl[s.param]||""; });
+    slicers().forEach(function(s){ set(s.param, sc.sl[s.param]||""); });
   }
   p.sdscope="1";
+
+  var keep=!!SCOPE.sendBlankParams;
   var parts=[];
   for(var k in p){
-    if(!Object.prototype.hasOwnProperty.call(p,k) || p[k]==="") continue;
+    if(!Object.prototype.hasOwnProperty.call(p,k)) continue;
+    if(p[k]==="" && !(keep && own[k])) continue;
     parts.push(encodeURIComponent(k)+"="+encodeURIComponent(p[k]));
   }
   return location.pathname+(parts.length?"?"+parts.join("&"):"")+location.hash;
